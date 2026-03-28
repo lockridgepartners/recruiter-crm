@@ -303,7 +303,7 @@ function useGmail(contacts, clients, setContacts, setClients) {
   return { gmailToken, gmailUser, syncing, lastSync, connectGmail, disconnectGmail, syncEmails, sendEmail, openCompose, composeOpen, setComposeOpen, composeTo, setComposeTo };
 }
 
-// ─── Gmail Compose Modal ──────────────────────────────────────────────────────
+// ─── Gmail Compose Modal — centered floating card ─────────────────────────────
 function GmailComposeModal({ composeTo, setComposeTo, onSend, onClose }) {
   const [sending, setSending] = useState(false);
   const [sent,    setSent]    = useState(false);
@@ -319,18 +319,28 @@ function GmailComposeModal({ composeTo, setComposeTo, onSend, onClose }) {
   };
 
   return (
-    <div onClick={onClose} onTouchMove={e=>e.stopPropagation()} onWheel={e=>e.stopPropagation()}
-      style={{position:"fixed",inset:0,zIndex:900,display:"flex",alignItems:"flex-end",justifyContent:"center",background:"rgba(0,0,0,0.48)",backdropFilter:"blur(6px)",touchAction:"none"}}>
-      <div onClick={e=>e.stopPropagation()} className="pop-in"
-        style={{background:T.bg,borderRadius:"22px 22px 0 0",width:"100%",maxWidth:393,maxHeight:"88%",display:"flex",flexDirection:"column",boxShadow:"0 -8px 40px rgba(0,0,0,0.2)"}}>
-
-        {/* Header */}
-        <div style={{flexShrink:0,background:"linear-gradient(135deg,#EA4335,#FBBC04)",padding:"14px 16px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",borderRadius:"22px 22px 0 0"}}>
+    <div
+      onClick={onClose}
+      onTouchMove={e=>e.stopPropagation()}
+      onWheel={e=>e.stopPropagation()}
+      style={{position:"fixed",inset:0,zIndex:900,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 20px",background:"rgba(0,0,0,0.48)",backdropFilter:"blur(6px)",touchAction:"none"}}
+    >
+      <div
+        onClick={e=>e.stopPropagation()}
+        onTouchMove={e=>e.stopPropagation()}
+        className="pop-in"
+        style={{background:T.bg,borderRadius:22,width:"100%",maxWidth:380,maxHeight:"82%",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 24px 60px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.2)",touchAction:"auto"}}
+      >
+        {/* Coloured header */}
+        <div style={{flexShrink:0,background:"linear-gradient(135deg,#EA4335,#FBBC04)",padding:"15px 14px 13px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:30,height:30,borderRadius:9,background:"rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-              <Icon name="mail" size={15} color="#fff" strokeWidth={2}/>
+            <div style={{width:32,height:32,borderRadius:9,background:"rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <Icon name="mail" size={17} color="#fff" strokeWidth={1.9}/>
             </div>
-            <div style={{...sf(16,700,"#fff")}}>New Email</div>
+            <div>
+              <div style={{...sf(16,700,"#fff")}}>New Email</div>
+              <div style={{...sf(11,400,"rgba(255,255,255,0.75)"),marginTop:1}}>{composeTo.name||composeTo.email||"Compose"}</div>
+            </div>
           </div>
           <div className="tap" onClick={onClose} style={{width:26,height:26,borderRadius:13,background:"rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center"}}>
             <Icon name="dismiss" size={13} color="#fff" strokeWidth={2.4}/>
@@ -338,41 +348,53 @@ function GmailComposeModal({ composeTo, setComposeTo, onSend, onClose }) {
         </div>
 
         {/* Fields */}
-        <div style={{flex:1,overflowY:"auto",padding:"0 0 16px"}}>
+        <div style={{flex:1,overflowY:"auto",overscrollBehavior:"contain"}}>
           {[
-            {label:"To",     key:"email",   ph:"recipient@email.com",    type:"email"},
-            {label:"Subject",key:"subject", ph:"Subject line…",           type:"text"},
-          ].map((f,i)=>(
-            <div key={f.key} style={{borderBottom:`0.5px solid ${T.sep}`}}>
-              <div style={{display:"flex",alignItems:"center",padding:"11px 16px",gap:10}}>
-                <div style={{width:54,flexShrink:0,...sf(13,400,T.label3)}}>{f.label}</div>
-                <input value={composeTo[f.key]} onChange={e=>setComposeTo(p=>({...p,[f.key]:e.target.value}))}
-                  placeholder={f.ph} type={f.type}
-                  style={{flex:1,border:"none",outline:"none",...sf(15,400,T.label),background:"transparent"}}/>
-              </div>
+            {label:"To",     key:"email",   ph:"recipient@email.com"},
+            {label:"Subject",key:"subject", ph:"Subject line…"},
+          ].map(f=>(
+            <div key={f.key} style={{borderBottom:`0.5px solid ${T.sep}`,display:"flex",alignItems:"center",padding:"11px 14px",gap:10}}>
+              <div style={{width:54,flexShrink:0,...sf(13,500,T.label3)}}>{f.label}</div>
+              <input
+                value={composeTo[f.key]}
+                onChange={e=>setComposeTo(p=>({...p,[f.key]:e.target.value}))}
+                placeholder={f.ph}
+                style={{flex:1,border:"none",outline:"none",...sf(14,400,T.label),background:"transparent"}}
+              />
             </div>
           ))}
-          <div style={{padding:"12px 16px"}}>
-            <textarea value={composeTo.body} onChange={e=>setComposeTo(p=>({...p,body:e.target.value}))}
-              placeholder="Write your message…" rows={10}
-              style={{width:"100%",border:"none",outline:"none",...sf(15,400,T.label),background:"transparent",resize:"none",lineHeight:1.65,minHeight:180}}/>
+          <div style={{padding:"12px 14px"}}>
+            <textarea
+              value={composeTo.body}
+              onChange={e=>setComposeTo(p=>({...p,body:e.target.value}))}
+              placeholder="Write your message…"
+              rows={8}
+              style={{width:"100%",border:"none",outline:"none",...sf(14,400,T.label),background:"transparent",resize:"none",lineHeight:1.65,minHeight:160}}
+            />
           </div>
-          {error&&<div style={{...sf(13,400,T.red),padding:"0 16px 8px"}}>{error}</div>}
+          {error&&<div style={{...sf(12,400,T.red),padding:"0 14px 10px"}}>{error}</div>}
         </div>
 
-        {/* Actions */}
-        <div style={{flexShrink:0,padding:"10px 16px 34px",borderTop:`0.5px solid ${T.sep}`,display:"flex",gap:8}}>
+        {/* Footer */}
+        <div style={{flexShrink:0,padding:"10px 14px 14px",borderTop:`0.5px solid ${T.sep}`,display:"flex",gap:8,alignItems:"center"}}>
           {sent ? (
-            <div style={{display:"flex",alignItems:"center",gap:7,...sf(14,600,T.green)}}><Icon name="check" size={16} color={T.green} strokeWidth={2}/>Sent!</div>
+            <div style={{display:"flex",alignItems:"center",gap:7,...sf(14,600,T.green)}}>
+              <Icon name="check" size={16} color={T.green} strokeWidth={2}/>Sent!
+            </div>
           ) : (
             <>
               <button onClick={handleSend} disabled={sending} className="tap"
-                style={{display:"flex",alignItems:"center",gap:7,border:"none",borderRadius:12,padding:"11px 20px",background:"#EA4335",color:"#fff",...sf(15,600,"#fff"),cursor:"pointer",flex:1,justifyContent:"center"}}>
+                style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:7,border:"none",borderRadius:12,padding:"11px 0",background:"#EA4335",color:"#fff",...sf(15,600,"#fff"),cursor:"pointer"}}>
                 <Icon name="send" size={15} color="#fff" strokeWidth={2}/>{sending?"Sending…":"Send"}
               </button>
               <GhostBtn label="Cancel" color={T.gray} onPress={onClose}/>
             </>
           )}
+        </div>
+
+        {/* Tap outside hint */}
+        <div style={{flexShrink:0,padding:"4px 0 10px",textAlign:"center"}}>
+          <div style={{...sf(11,400,T.label3)}}>Tap outside to close</div>
         </div>
       </div>
     </div>
@@ -483,8 +505,9 @@ const T={
 
 const GS=()=>(
   <style>{`
-    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-    body{margin:0;background:#000;}
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0;}
+    html,body{height:100%;width:100%;overflow:hidden;background:#FFFFFF;}
+    body{margin:0;background:#fff;}
     input,textarea{-webkit-appearance:none;font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
     ::-webkit-scrollbar{display:none;}
     @keyframes fadeIn{from{opacity:0}to{opacity:1}}
@@ -499,6 +522,9 @@ const GS=()=>(
     .sheet-in{animation:sheetIn 0.36s cubic-bezier(0.34,1.56,0.64,1) both;}
     .tap{transition:transform 0.11s ease,opacity 0.11s ease;cursor:pointer;user-select:none;}
     .tap:active{transform:scale(0.96);opacity:0.75;}
+    /* PWA safe area support for iPhone notch and home indicator */
+    .safe-top{padding-top:env(safe-area-inset-top, 44px);}
+    .safe-bottom{padding-bottom:env(safe-area-inset-bottom, 20px);}
   `}</style>
 );
 
@@ -926,7 +952,7 @@ function KpiModal({kpi,contacts,jobs,clients,onClose}){
       onClick={onClose}
       onTouchMove={e=>e.stopPropagation()}
       onWheel={e=>e.stopPropagation()}
-      style={{position:"absolute",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 20px",background:"rgba(0,0,0,0.48)",backdropFilter:"blur(6px)",touchAction:"none"}}
+      style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 20px",background:"rgba(0,0,0,0.48)",backdropFilter:"blur(6px)",touchAction:"none"}}
     >
       <div
         onClick={e=>e.stopPropagation()}
@@ -1027,7 +1053,7 @@ function NBAModal({actions,onClose,onDismiss}){
       onClick={onClose}
       onTouchMove={e=>e.stopPropagation()}
       onWheel={e=>e.stopPropagation()}
-      style={{position:"absolute",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 20px",background:"rgba(0,0,0,0.48)",backdropFilter:"blur(6px)",touchAction:"none"}}
+      style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 20px",background:"rgba(0,0,0,0.48)",backdropFilter:"blur(6px)",touchAction:"none"}}
     >
       <div
         onClick={e=>e.stopPropagation()}
@@ -1314,6 +1340,13 @@ function ExpandableContactCard({contact,setContacts,last,gmail}){
                 {!editing&&<GhostBtn label="Call" icon="phone" color={T.green} onPress={()=>{}}/>}
                 {!editing&&<GhostBtn label="Email" icon="mail" color={T.blue} onPress={()=>gmail?.openCompose({email:contact.email,name:contact.name,subject:`Following up — ${contact.name}`,body:"Hi,\n\n"})}/>}
                 {editing&&<GhostBtn label="Cancel" color={T.gray} onPress={cancel}/>}
+                {!editing&&(
+                  <button onClick={()=>{if(window.confirm(`Delete ${contact.name}? This cannot be undone.`))setContacts(p=>p.filter(c=>c.id!==contact.id));}}
+                    className="tap"
+                    style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5,border:"none",background:`${T.red}10`,borderRadius:9,padding:"7px 12px",color:T.red,...sf(13,600),cursor:"pointer"}}>
+                    <Icon name="trash" size={13} color={T.red} strokeWidth={2}/>Delete
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -1897,7 +1930,7 @@ function TabBar({active,onChange}){
     {id:"jobs",     icon:"briefcase",label:"Jobs"},
   ];
   return(
-    <div style={{position:"absolute",bottom:0,left:0,right:0,zIndex:200,background:"rgba(249,249,249,0.94)",backdropFilter:"blur(20px) saturate(180%)",WebkitBackdropFilter:"blur(20px) saturate(180%)",borderTop:`0.5px solid ${T.sep}`,display:"flex",padding:"8px 0 28px"}}>
+    <div style={{flexShrink:0,zIndex:200,background:"rgba(249,249,249,0.94)",backdropFilter:"blur(20px) saturate(180%)",WebkitBackdropFilter:"blur(20px) saturate(180%)",borderTop:`0.5px solid ${T.sep}`,display:"flex",padding:`8px 0 calc(env(safe-area-inset-bottom, 20px) + 4px)`}}>
       {tabs.map(t=>{const on=active===t.id;return(
         <div key={t.id} className="tap" onClick={()=>onChange(t.id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
           <Icon name={t.icon} size={22} color={on?T.blue:T.gray3} strokeWidth={on?2:1.6}/>
@@ -1921,8 +1954,8 @@ function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActi
   ];
 
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
-      <div style={{padding:"56px 20px 20px",background:T.card}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
+      <div style={{padding:"calc(env(safe-area-inset-top, 44px) + 16px) 20px 20px",background:T.card}}>
         <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:2}}>
           <div>
             <div style={{...sf(12,500,T.label3),textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:4}}>Friday · March 27</div>
@@ -2023,8 +2056,8 @@ function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActi
 function Pipeline({contacts,setContacts,gmail}){
   const [filter,setFilter]=useState("All");
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
-      <div style={{padding:"56px 16px 12px",background:T.card,borderBottom:`0.5px solid ${T.sep}`,position:"sticky",top:0,zIndex:10}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
+      <div style={{padding:"calc(env(safe-area-inset-top, 44px) + 16px) 16px 12px",background:T.card,borderBottom:`0.5px solid ${T.sep}`,position:"sticky",top:0,zIndex:10}}>
         <div style={{...sf(28,700,T.label),marginBottom:12}}>Pipeline</div>
         <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:2}}>
           {["All",...STAGES].map(s=>{const on=filter===s;const m=STAGE_META[s];return(<div key={s} className="tap" onClick={()=>setFilter(s)} style={{borderRadius:20,padding:"6px 14px",flexShrink:0,background:on?(m?m.color:T.blue):T.gray5,color:on?"#fff":T.gray,...sf(13,on?600:400,on?"#fff":T.gray),transition:`all 0.18s ${T.ease}`}}>{s}</div>);})}
@@ -2045,8 +2078,8 @@ function Contacts({contacts,setContacts,gmail}){
   if(showAdd) return <AddContactForm onBack={()=>setShowAdd(false)} onSave={c=>{setContacts(p=>[...p,{...c,id:Date.now(),avatar:c.name.split(" ").map(n=>n[0]).join("").slice(0,2),lastContact:"Just now",lastContactDays:0,hot:false,resume:null}]);setShowAdd(false);}}/>;
   const filtered=contacts.filter(c=>c.name.toLowerCase().includes(search.toLowerCase())||c.company.toLowerCase().includes(search.toLowerCase())||c.title.toLowerCase().includes(search.toLowerCase()));
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
-      <div style={{padding:"56px 16px 12px",background:T.card,borderBottom:`0.5px solid ${T.sep}`,position:"sticky",top:0,zIndex:10}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
+      <div style={{padding:"calc(env(safe-area-inset-top, 44px) + 16px) 16px 12px",background:T.card,borderBottom:`0.5px solid ${T.sep}`,position:"sticky",top:0,zIndex:10}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{...sf(28,700,T.label)}}>Candidates</div><div className="tap" onClick={()=>setShowAdd(true)} style={{background:T.blue,borderRadius:20,padding:"7px 14px",display:"flex",alignItems:"center",gap:6,...sf(14,600,"#fff"),cursor:"pointer"}}><Icon name="plus" size={14} color="#fff" strokeWidth={2.5}/>New</div></div>
         <div style={{background:T.gray5,borderRadius:11,padding:"9px 14px",display:"flex",gap:8,alignItems:"center"}}><Icon name="people" size={16} color={T.gray} strokeWidth={1.6}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search candidates…" style={{background:"none",border:"none",outline:"none",...sf(16,400,T.label),flex:1}}/></div>
       </div>
@@ -2061,7 +2094,7 @@ function AddContactForm({onBack,onSave}){
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const fields=[{k:"name",l:"Full Name",ph:"Jane Smith"},{k:"title",l:"Title",ph:"Sr. Engineer"},{k:"company",l:"Company",ph:"Google"},{k:"email",l:"Email",ph:"jane@co.com"},{k:"phone",l:"Phone",ph:"+1 415 555 0000"},{k:"salary",l:"Salary",ph:"$180k"},{k:"tags",l:"Skills",ph:"React, Node, AWS"}];
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"52px 16px 16px",background:T.card,borderBottom:`0.5px solid ${T.sep}`}}><span className="tap" onClick={onBack} style={{...sf(16,400,T.blue),cursor:"pointer"}}>Cancel</span><span style={{...sf(16,600,T.label)}}>New Candidate</span><span className="tap" onClick={()=>f.name&&onSave({...f,tags:f.tags.split(",").map(t=>t.trim()).filter(Boolean)})} style={{...sf(16,600,T.blue),cursor:"pointer"}}>Add</span></div>
       <div style={{height:1,background:T.sep}}/>
       <ListCard style={{margin:"0 16px"}}>{fields.map((fi,i)=>(<div key={fi.k} style={{borderBottom:i<fields.length-1?`0.5px solid ${T.sep}`:"none"}}><div style={{display:"flex",alignItems:"center",padding:"11px 16px",gap:12}}><div style={{width:72,flexShrink:0,...sf(13,400,T.label3)}}>{fi.l}</div><input value={f[fi.k]} onChange={e=>u(fi.k,e.target.value)} placeholder={fi.ph} style={{flex:1,border:"none",outline:"none",...sf(15,400,T.label),background:"transparent"}}/></div></div>))}</ListCard>
@@ -2078,8 +2111,8 @@ function Clients({clients,setClients,jobs,gmail}){
   const filtered=clients.filter(c=>{const ms=c.name.toLowerCase().includes(search.toLowerCase())||c.industry.toLowerCase().includes(search.toLowerCase());const mst=filterStatus==="All"||c.status===filterStatus;return ms&&mst;});
   const totalFees=clients.reduce((s,c)=>s+parseInt((c.totalFees||"$0").replace(/\D/g,"")),0);
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
-      <div style={{padding:"56px 16px 12px",background:T.card,borderBottom:`0.5px solid ${T.sep}`,position:"sticky",top:0,zIndex:10}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
+      <div style={{padding:"calc(env(safe-area-inset-top, 44px) + 16px) 16px 12px",background:T.card,borderBottom:`0.5px solid ${T.sep}`,position:"sticky",top:0,zIndex:10}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{...sf(28,700,T.label)}}>Clients</div><div className="tap" onClick={()=>setShowAdd(true)} style={{background:T.blue,borderRadius:20,padding:"7px 14px",display:"flex",alignItems:"center",gap:6,...sf(14,600,"#fff"),cursor:"pointer"}}><Icon name="plus" size={14} color="#fff" strokeWidth={2.5}/>New</div></div>
         <div style={{display:"flex",gap:20,marginBottom:12}}>{[{v:`$${(totalFees/1000).toFixed(0)}k`,l:"Total Fees",c:T.green},{v:clients.filter(c=>c.status==="Active").length,l:"Active",c:T.blue},{v:clients.length,l:"Total",c:T.gray}].map(s=>(<div key={s.l}><div style={{...sf(20,700,s.c)}}>{s.v}</div><div style={{...sf(10,400,T.label3),marginTop:1}}>{s.l}</div></div>))}</div>
         <div style={{background:T.gray5,borderRadius:11,padding:"9px 14px",display:"flex",gap:8,alignItems:"center",marginBottom:10}}><Icon name="building" size={16} color={T.gray} strokeWidth={1.6}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search clients…" style={{background:"none",border:"none",outline:"none",...sf(16,400,T.label),flex:1}}/></div>
@@ -2096,7 +2129,7 @@ function AddClientForm({onBack,onSave}){
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const fields=[{k:"name",l:"Company Name",ph:"Acme Corp"},{k:"industry",l:"Industry",ph:"Financial Technology"},{k:"website",l:"Website",ph:"acme.com"},{k:"revenue",l:"ARR / Revenue",ph:"$50M ARR"},{k:"employees",l:"Employees",ph:"200"},{k:"address",l:"Address",ph:"123 Market St, SF"}];
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"52px 16px 16px",background:T.card,borderBottom:`0.5px solid ${T.sep}`}}><span className="tap" onClick={onBack} style={{...sf(16,400,T.blue),cursor:"pointer"}}>Cancel</span><span style={{...sf(16,600,T.label)}}>New Client</span><span className="tap" onClick={()=>f.name&&onSave({...f,tags:f.tags.split(",").map(t=>t.trim()).filter(Boolean)})} style={{...sf(16,600,T.blue),cursor:"pointer"}}>Add</span></div>
       <div style={{height:1,background:T.sep}}/>
       <ListCard style={{margin:"0 16px"}}>{fields.map((fi,i)=>(<div key={fi.k} style={{borderBottom:i<fields.length-1?`0.5px solid ${T.sep}`:"none"}}><div style={{display:"flex",alignItems:"center",padding:"11px 16px",gap:12}}><div style={{width:80,flexShrink:0,...sf(13,400,T.label3)}}>{fi.l}</div><input value={f[fi.k]} onChange={e=>u(fi.k,e.target.value)} placeholder={fi.ph} style={{flex:1,border:"none",outline:"none",...sf(15,400,T.label),background:"transparent"}}/></div></div>))}</ListCard>
@@ -2115,8 +2148,8 @@ function Jobs({jobs,setJobs}){
   const active=jobs.filter(j=>j.stage==="Active"),pending=jobs.filter(j=>j.stage==="Pending"),filled=jobs.filter(j=>j.stage==="Filled");
   if(showAdd) return <AddJobForm onBack={()=>setShowAdd(false)} onSave={j=>{setJobs(p=>[...p,{...j,id:Date.now(),candidates:0,urgent:false,deadlineDays:30}]);setShowAdd(false);}}/>;
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
-      <div style={{padding:"56px 16px 16px",background:T.card,borderBottom:`0.5px solid ${T.sep}`}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
+      <div style={{padding:"calc(env(safe-area-inset-top, 44px) + 16px) 16px 16px",background:T.card,borderBottom:`0.5px solid ${T.sep}`}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{...sf(28,700,T.label)}}>Jobs</div><div className="tap" onClick={()=>setShowAdd(true)} style={{background:T.blue,borderRadius:20,padding:"7px 14px",display:"flex",alignItems:"center",gap:6,...sf(14,600,"#fff"),cursor:"pointer"}}><Icon name="plus" size={14} color="#fff" strokeWidth={2.5}/>New Job</div></div>
         <div style={{display:"flex",gap:20,marginTop:12}}>{[{v:`$${(totalFees/1000).toFixed(0)}k`,l:"Pipeline",c:T.green},{v:active.length,l:"Active",c:T.blue},{v:filled.length,l:"Filled",c:T.gray}].map(s=>(<div key={s.l}><div style={{...sf(22,700,s.c)}}>{s.v}</div><div style={{...sf(11,400,T.label3)}}>{s.l}</div></div>))}</div>
       </div>
@@ -2130,7 +2163,7 @@ function AddJobForm({onBack,onSave}){
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const fields=[{k:"title",l:"Job Title",ph:"VP of Engineering"},{k:"company",l:"Company",ph:"Acme Corp"},{k:"fee",l:"Fee",ph:"$45,000"},{k:"deadline",l:"Deadline",ph:"Apr 30"}];
   return(
-    <div style={{overflowY:"auto",paddingBottom:110}}>
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"52px 16px 16px",background:T.card,borderBottom:`0.5px solid ${T.sep}`}}><span className="tap" onClick={onBack} style={{...sf(16,400,T.blue),cursor:"pointer"}}>Cancel</span><span style={{...sf(16,600,T.label)}}>New Job</span><span className="tap" onClick={()=>f.title&&onSave(f)} style={{...sf(16,600,T.blue),cursor:"pointer"}}>Add</span></div>
       <div style={{height:1,background:T.sep}}/>
       <ListCard style={{margin:"0 16px"}}>{fields.map((fi,i)=>(<div key={fi.k} style={{borderBottom:i<fields.length-1?`0.5px solid ${T.sep}`:"none"}}><div style={{display:"flex",alignItems:"center",padding:"11px 16px",gap:12}}><div style={{width:72,flexShrink:0,...sf(13,400,T.label3)}}>{fi.l}</div><input value={f[fi.k]} onChange={e=>u(fi.k,e.target.value)} placeholder={fi.ph} style={{flex:1,border:"none",outline:"none",...sf(15,400,T.label),background:"transparent"}}/></div></div>))}</ListCard>
@@ -2169,63 +2202,50 @@ export default function App(){
   return(
     <>
       <GS/>
-      <div style={{minHeight:"100vh",background:"#1C1C1E",display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div style={{width:393,height:852,position:"relative",overflow:"hidden",borderRadius:52,background:T.bg,boxShadow:"0 0 0 11px #1C1C1E, 0 0 0 13px #3A3A3C, 0 0 0 14.5px #2C2C2E, 0 60px 160px rgba(0,0,0,0.95)"}}>
+      {/* Full-screen — no fake phone frame */}
+      <div style={{position:"fixed",inset:0,background:T.bg,display:"flex",flexDirection:"column",overflow:"hidden"}}>
 
-          {/* Status bar */}
-          <div style={{position:"absolute",top:0,left:0,right:0,height:52,display:"flex",justifyContent:"space-between",alignItems:"flex-end",padding:"0 28px 8px",zIndex:300,pointerEvents:"none"}}>
-            <span style={{...sf(15,600,T.label),fontVariantNumeric:"tabular-nums"}}>9:41</span>
-            <div style={{display:"flex",gap:6,alignItems:"center"}}>
-              <Icon name="signal" size={16} color={T.label} strokeWidth={0}/>
-              <Icon name="wifi" size={16} color={T.label} strokeWidth={1.8}/>
-              <Icon name="battery" size={22} color={T.label} strokeWidth={1.5}/>
+        {/* Loading overlay */}
+        {isLoading && <LoadingScreen/>}
+
+        {/* Screen */}
+        {!isLoading && (
+          <div style={{flex:1,overflowY:anyModalOpen?"hidden":"auto",overflowX:"hidden",background:T.bg,position:"relative"}}>
+            <div className="fade-in" key={tab}>
+              {tab==="dashboard"&&<Dashboard
+                contacts={contacts} setContacts={setContacts}
+                jobs={jobs} setJobs={setJobs}
+                clients={clients}
+                activities={activities} setActivities={setActivities}
+                onNavigate={setTab}
+                nbaActions={nbaActions} onDismissNBA={dismissNBA}
+                onOpenKpi={setKpiModal} onOpenNBA={()=>setShowNBA(true)}
+                gmail={gmail}
+              />}
+              {tab==="pipeline" &&<Pipeline  contacts={contacts} setContacts={setContacts} gmail={gmail}/>}
+              {tab==="clients"  &&<Clients   clients={clients} setClients={setClients} jobs={jobs} gmail={gmail}/>}
+              {tab==="contacts" &&<Contacts  contacts={contacts} setContacts={setContacts} gmail={gmail}/>}
+              {tab==="jobs"     &&<Jobs      jobs={jobs} setJobs={setJobs}/>}
             </div>
+
+            {/* Modals — position fixed so they cover full screen on real device */}
+            {kpiModal&&<KpiModal kpi={kpiModal} contacts={contacts||[]} jobs={jobs||[]} clients={clients||[]} onClose={()=>setKpiModal(null)}/>}
+            {showNBA&&<NBAModal actions={nbaActions} onClose={()=>setShowNBA(false)} onDismiss={dismissNBA}/>}
           </div>
+        )}
 
-          {/* Dynamic Island */}
-          <div style={{position:"absolute",top:13,left:"50%",transform:"translateX(-50%)",width:118,height:34,background:"#000",borderRadius:20,zIndex:400}}/>
+        {/* Gmail Compose Modal */}
+        {gmail.composeOpen&&(
+          <GmailComposeModal
+            composeTo={gmail.composeTo}
+            setComposeTo={gmail.setComposeTo}
+            onSend={gmail.sendEmail}
+            onClose={()=>gmail.setComposeOpen(false)}
+          />
+        )}
 
-          {/* Loading overlay */}
-          {isLoading && <LoadingScreen/>}
-
-          {/* Screen */}
-          {!isLoading && (
-            <div style={{position:"absolute",inset:0,overflowY:anyModalOpen?"hidden":"auto",overflowX:"hidden",background:T.bg}}>
-              <div className="fade-in" key={tab}>
-                {tab==="dashboard"&&<Dashboard
-                  contacts={contacts} setContacts={setContacts}
-                  jobs={jobs} setJobs={setJobs}
-                  clients={clients}
-                  activities={activities} setActivities={setActivities}
-                  onNavigate={setTab}
-                  nbaActions={nbaActions} onDismissNBA={dismissNBA}
-                  onOpenKpi={setKpiModal} onOpenNBA={()=>setShowNBA(true)}
-                  gmail={gmail}
-                />}
-                {tab==="pipeline" &&<Pipeline  contacts={contacts} setContacts={setContacts} gmail={gmail}/>}
-                {tab==="clients"  &&<Clients   clients={clients} setClients={setClients} jobs={jobs} gmail={gmail}/>}
-                {tab==="contacts" &&<Contacts  contacts={contacts} setContacts={setContacts} gmail={gmail}/>}
-                {tab==="jobs"     &&<Jobs      jobs={jobs} setJobs={setJobs}/>}
-              </div>
-            </div>
-          )}
-
-          {/* Modals */}
-          {kpiModal&&<KpiModal kpi={kpiModal} contacts={contacts||[]} jobs={jobs||[]} clients={clients||[]} onClose={()=>setKpiModal(null)}/>}
-          {showNBA&&<NBAModal actions={nbaActions} onClose={()=>setShowNBA(false)} onDismiss={dismissNBA}/>}
-
-          {/* Gmail Compose Modal */}
-          {gmail.composeOpen&&(
-            <GmailComposeModal
-              composeTo={gmail.composeTo}
-              setComposeTo={gmail.setComposeTo}
-              onSend={gmail.sendEmail}
-              onClose={()=>gmail.setComposeOpen(false)}
-            />
-          )}
-
-          <TabBar active={tab} onChange={setTab}/>
-        </div>
+        {/* Tab bar — always at the bottom */}
+        {!isLoading&&<TabBar active={tab} onChange={setTab}/>}
       </div>
     </>
   );
