@@ -147,7 +147,7 @@ function useActivityLogger(setActivities, activities, gmail) {
 // Applied when Supabase returns old records missing fields added after initial seed
 const sanitizers = {
   contacts:   (c)  => ({ bdPitch:"", gmailEmails:[], ...c }),
-  jobs:       (j)  => ({ jobPitch:"", prospects:[], ...j }),
+  jobs:       (j)  => ({ jobPitch:"", prospects:[], clientId:null, clientContactId:null, ...j }),
   clients:    (cl) => ({
     ...cl,
     contacts: (cl.contacts||[]).map(ct => ({ gmailEmails:[], activities:[], ...ct })),
@@ -158,34 +158,45 @@ const sanitizers = {
 function useSupabaseTable(table, seedData) {
   const [rows, setRows] = useState(null); // null = loading
   const [synced, setSynced] = useState(false);
-  const initialized = useRef(false);
+  const initialized = useRef(false); // prevents double-seed in React 18 Strict Mode
 
-  // Load on mount
+  // Load on mount — NEVER overwrites existing Supabase data
   useEffect(() => {
+    if (initialized.current) return; // guard against double-fire
+    initialized.current = true;
+
     sb.select(table).then(data => {
       const sanitize = sanitizers[table] || (x=>x);
       if (data && data.length > 0) {
-        setRows(data.map(r => sanitize(r.data)));
+        // Supabase has real data — load and sanitize (adds missing fields, never removes)
+        const sanitized = data.map(r => ({ raw: r.data, clean: sanitize(r.data) }));
+        setRows(sanitized.map(s => s.clean));
+        // Write back only rows that needed new fields added (one-time migration)
+        sanitized.forEach(({ raw, clean }) => {
+          if (JSON.stringify(raw) !== JSON.stringify(clean)) {
+            sb.upsert(table, { id: clean.id, data: clean });
+          }
+        });
       } else {
+        // First-ever run — seed with demo data
         setRows(seedData);
         seedData.forEach(row => sb.upsert(table, { id: row.id, data: row }));
       }
       setSynced(true);
     }).catch(() => {
-      // Offline fallback
+      // Offline — use seed data locally, don't write to Supabase
       const sanitize = sanitizers[table] || (x=>x);
       setRows(seedData.map(sanitize));
       setSynced(true);
     });
-  }, [table]);
+  }, [table]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Setter that also persists to Supabase
+  // Setter — only writes to Supabase when the user actually changes data
   const setAndSync = useCallback((updater) => {
     setRows(prev => {
       const next = typeof updater === "function" ? updater(prev || []) : updater;
       if (!next) return next;
 
-      // Diff: find changed/added rows and upsert them
       const prevMap = new Map((prev || []).map(r => [r.id, JSON.stringify(r)]));
       next.forEach(row => {
         if (prevMap.get(row.id) !== JSON.stringify(row)) {
@@ -193,7 +204,6 @@ function useSupabaseTable(table, seedData) {
         }
       });
 
-      // Diff: find removed rows and delete them
       const nextIds = new Set(next.map(r => r.id));
       (prev || []).forEach(row => {
         if (!nextIds.has(row.id)) sb.remove(table, row.id);
@@ -580,6 +590,200 @@ function GmailThreadView({ emails, contactName }) {
   );
 }
 
+// ─── Prospect Modal — candidate overview for a specific job ──────────────────
+function ProspectModal({ prospect, candidate, job, linkedClient, primaryContact, onClose, onUpdateStatus, onSend, logActivity, gmail }) {
+  const [showCompose, setShowCompose] = useState(false);
+  const [composeTo, setComposeTo] = useState(null);
+  const [submitDone, setSubmitDone] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const meta = PROSPECT_STATUS_META[prospect.status] || PROSPECT_STATUS_META.prospect;
+
+  const buildSubmissionEmail = () => {
+    const clientName = linkedClient?.name || job.company;
+    const contactName = primaryContact?.name || "Hiring Manager";
+    const bdPitch = candidate.bdPitch || "";
+    const body = bdPitch
+      ? bdPitch.replace(/\[Contact Name\]/gi, contactName).replace(/\[Client Company Name\]/gi, clientName)
+      : `Hi ${contactName},\n\nI wanted to submit ${candidate.name} for your consideration for the ${job.title} role at ${clientName}.\n\nBackground: ${candidate.title} at ${candidate.company}${candidate.salary ? ` · Target: ${candidate.salary}` : ""}.\n\n${candidate.notes ? candidate.notes + "\n\n" : ""}I believe they would be a strong fit. Happy to share more details or set up a call.\n\nBest regards`;
+    return {
+      name: contactName,
+      email: primaryContact?.email || "",
+      subject: `Candidate Submission: ${candidate.name} — ${job.title} at ${clientName}`,
+      body,
+    };
+  };
+
+  const handleCreateSubmission = () => {
+    setComposeTo(buildSubmissionEmail());
+    setShowCompose(true);
+  };
+
+  const handleSend = async (params) => {
+    setSubmitting(true);
+    const ok = await onSend(params);
+    setSubmitting(false);
+    if (ok) {
+      onUpdateStatus(prospect.contactId, "submitted");
+      logActivity?.("emailSent", `Submitted ${candidate.name} for ${job.title} at ${job.company}`, `Sent to: ${primaryContact?.email || params.to}`);
+      setSubmitDone(true);
+      setTimeout(() => { setShowCompose(false); onClose(); }, 1200);
+    }
+    return ok;
+  };
+
+  const canSubmit = gmail?.gmailUser && primaryContact?.email;
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        onTouchMove={e=>e.stopPropagation()}
+        onWheel={e=>e.stopPropagation()}
+        style={{position:"fixed",inset:0,zIndex:900,display:"flex",alignItems:"center",justifyContent:"center",padding:"24px 20px",background:"rgba(0,0,0,0.48)",backdropFilter:"blur(6px)",touchAction:"none"}}
+      >
+        <div
+          onClick={e=>e.stopPropagation()}
+          onTouchMove={e=>e.stopPropagation()}
+          className="pop-in"
+          style={{background:T.bg,borderRadius:22,width:"100%",maxWidth:380,maxHeight:"82%",overflow:"hidden",display:"flex",flexDirection:"column",boxShadow:"0 24px 60px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.2)",touchAction:"auto"}}
+        >
+          {/* Colored header — uses prospect status color */}
+          <div style={{flexShrink:0,background:`linear-gradient(135deg,${meta.color},${meta.color}bb)`,padding:"15px 14px 13px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{width:36,height:36,borderRadius:10,background:"rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                <Avatar initials={candidate.avatar||"?"} size={26}/>
+              </div>
+              <div style={{minWidth:0}}>
+                <div style={{...sf(16,700,"#fff")}}>{candidate.name}</div>
+                <div style={{...sf(11,400,"rgba(255,255,255,0.80)"),marginTop:1}}>
+                  {candidate.title} · {meta.label}
+                </div>
+              </div>
+            </div>
+            <div className="tap" onClick={onClose} style={{width:26,height:26,borderRadius:13,background:"rgba(255,255,255,0.22)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+              <Icon name="dismiss" size={13} color="#fff" strokeWidth={2.4}/>
+            </div>
+          </div>
+
+          {/* Scrollable body */}
+          <div
+            onClick={e=>e.stopPropagation()}
+            onTouchMove={e=>e.stopPropagation()}
+            style={{flex:1,overflowY:"auto",overscrollBehavior:"contain",WebkitOverflowScrolling:"touch",padding:"14px 14px 4px"}}
+          >
+            {/* Role context */}
+            <div style={{background:T.card,borderRadius:12,padding:"11px 13px",marginBottom:12,border:`0.5px solid ${T.sep}`,display:"flex",alignItems:"center",gap:10}}>
+              <IconBadge name="briefcase" bg="rgba(0,122,255,0.08)" iconColor={T.blue} size={34}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{...sf(13,600,T.label)}}>{job.title}</div>
+                <div style={{...sf(11,400,T.label3),marginTop:1}}>{job.company} · {job.fee}</div>
+              </div>
+              <Pill label={job.stage} color={job.stage==="Active"?T.green:T.orange}/>
+            </div>
+
+            {/* Status selector */}
+            <div style={{marginBottom:12}}>
+              <div style={{...sf(10,700,T.label3),textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:7}}>Status for this Role</div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                {Object.entries(PROSPECT_STATUS_META).map(([s,m])=>(
+                  <div key={s} className="tap" onClick={()=>onUpdateStatus(prospect.contactId,s)}
+                    style={{borderRadius:16,padding:"5px 12px",background:prospect.status===s?`${m.color}18`:T.gray5,...sf(11,prospect.status===s?700:400,prospect.status===s?m.color:T.gray),border:`0.5px solid ${prospect.status===s?m.color:T.gray4}`,cursor:"pointer",transition:"all 0.15s"}}>
+                    {m.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Candidate info rows */}
+            <div style={{background:T.card,borderRadius:12,overflow:"hidden",border:`0.5px solid ${T.sep}`,marginBottom:12}}>
+              {[
+                {icon:"money", value:candidate.salary||"—",  color:T.orange},
+                {icon:"phone", value:candidate.phone||"—",   color:T.green,  href:candidate.phone?`tel:${candidate.phone}`:null},
+                {icon:"mail",  value:candidate.email||"—",   color:T.blue},
+                {icon:"clock", value:`Last contact: ${candidate.lastContact||"—"}`, color:T.label3},
+              ].map((r,i,a)=>(
+                r.href
+                  ? <a key={r.icon} href={r.href} style={{display:"flex",alignItems:"center",gap:11,padding:"9px 13px",borderBottom:i<a.length-1?`0.5px solid ${T.sep}`:"none",textDecoration:"none"}}>
+                      <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
+                      <span style={{...sf(13,400,r.color)}}>{r.value}</span>
+                    </a>
+                  : <div key={r.icon} style={{display:"flex",alignItems:"center",gap:11,padding:"9px 13px",borderBottom:i<a.length-1?`0.5px solid ${T.sep}`:"none"}}>
+                      <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
+                      <span style={{...sf(13,400,T.label2)}}>{r.value}</span>
+                    </div>
+              ))}
+            </div>
+
+            {/* Skills */}
+            {(candidate.tags||[]).length>0&&(
+              <div style={{marginBottom:12}}>
+                <div style={{...sf(10,700,T.label3),textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Skills</div>
+                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{(candidate.tags||[]).map(t=><Pill key={t} label={t} color={T.blue}/>)}</div>
+              </div>
+            )}
+
+            {/* Notes */}
+            {candidate.notes&&(
+              <div style={{marginBottom:12}}>
+                <div style={{...sf(10,700,T.label3),textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5}}>Notes</div>
+                <div style={{...sf(13,400,T.label2),lineHeight:1.6,background:T.card,borderRadius:10,padding:"9px 12px",border:`0.5px solid ${T.sep}`}}>{candidate.notes}</div>
+              </div>
+            )}
+
+            {/* Submission contact */}
+            {primaryContact&&(
+              <div style={{background:"rgba(0,122,255,0.05)",borderRadius:10,padding:"10px 13px",marginBottom:12,border:"0.5px solid rgba(0,122,255,0.15)"}}>
+                <div style={{...sf(10,700,T.label3),textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Submitting To</div>
+                <div style={{display:"flex",alignItems:"center",gap:9}}>
+                  <Avatar initials={(primaryContact.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)} size={30}/>
+                  <div>
+                    <div style={{...sf(13,600,T.label)}}>{primaryContact.name}</div>
+                    <div style={{...sf(11,400,T.label3)}}>{primaryContact.title} · {primaryContact.email}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Submit button */}
+            <div style={{paddingBottom:14}}>
+              {canSubmit&&(
+                <button className="tap" onClick={handleCreateSubmission} disabled={submitting||submitDone}
+                  style={{width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,border:"none",borderRadius:13,padding:"13px 0",background:submitDone?"rgba(52,199,89,0.12)":"linear-gradient(135deg,#007AFF,#5856D6)",color:submitDone?T.green:"#fff",...sf(15,600,submitDone?T.green:"#fff"),cursor:"pointer",boxShadow:submitDone?"none":"0 3px 16px rgba(0,122,255,0.3)"}}>
+                  <Icon name={submitDone?"check":"send"} size={16} color={submitDone?T.green:"#fff"} strokeWidth={2}/>
+                  {submitDone?"Submission Sent!":submitting?"Creating Email…":"Create Submission Email"}
+                </button>
+              )}
+              {!gmail?.gmailUser&&(
+                <div style={{textAlign:"center",padding:"6px 0",...sf(12,400,T.label3)}}>Connect Gmail on the Dashboard to submit.</div>
+              )}
+              {gmail?.gmailUser&&!primaryContact&&(
+                <div style={{textAlign:"center",padding:"6px 0",...sf(12,400,T.label3)}}>Set a submission contact on this job to enable sending.</div>
+              )}
+            </div>
+          </div>
+
+          <div style={{flexShrink:0,padding:"8px 0 12px",borderTop:`0.5px solid ${T.sep}`,textAlign:"center"}}>
+            <div style={{...sf(11,400,T.label3)}}>Tap outside to close</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Compose modal layered on top */}
+      {showCompose&&composeTo&&(
+        <GmailComposeModal
+          composeTo={composeTo}
+          setComposeTo={setComposeTo}
+          onSend={handleSend}
+          onClose={()=>setShowCompose(false)}
+          logActivity={null}
+        />
+      )}
+    </>
+  );
+}
+
 // ─── Gmail Status Bar (shown in Dashboard header) ─────────────────────────────
 function GmailStatusBar({ gmailUser, syncing, lastSync, onConnect, onDisconnect, onSync }) {
   if (!gmailUser) {
@@ -617,37 +821,72 @@ function GmailStatusBar({ gmailUser, syncing, lastSync, onConnect, onDisconnect,
 // ─── Loading Screen ───────────────────────────────────────────────────────────
 function LoadingScreen() {
   return (
-    <div style={{position:"absolute",inset:0,background:"#FFFFFF",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,zIndex:999}}>
+    <div style={{position:"absolute",inset:0,background:T.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,zIndex:999}}>
       <div style={{width:56,height:56,borderRadius:16,background:"linear-gradient(135deg,#007AFF,#AF52DE)",display:"flex",alignItems:"center",justifyContent:"center"}}>
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
         </svg>
       </div>
-      <div style={{fontFamily:"-apple-system,sans-serif",fontSize:17,fontWeight:600,color:"#000",letterSpacing:"-0.012em"}}>Loading your CRM…</div>
+      <div style={{fontFamily:"-apple-system,sans-serif",fontSize:17,fontWeight:600,color:T.label,letterSpacing:"-0.012em"}}>Loading your CRM…</div>
       <div style={{fontFamily:"-apple-system,sans-serif",fontSize:13,color:"rgba(60,60,67,0.55)"}}>Syncing with Supabase</div>
     </div>
   );
 }
 
 // ─── Tokens ───────────────────────────────────────────────────────────────────
-const T={
-  bg:"#FFFFFF",card:"#FFFFFF",
-  label:"#000",label2:"rgba(60,60,67,0.80)",label3:"rgba(60,60,67,0.55)",
-  sep:"rgba(60,60,67,0.10)",
-  blue:"#007AFF",green:"#34C759",orange:"#FF9500",red:"#FF3B30",
-  purple:"#AF52DE",teal:"#5AC8FA",indigo:"#5856D6",
-  gray:"#8E8E93",gray3:"#C7C7CC",gray4:"#D1D1D6",gray5:"#EFEFEF",gray6:"#F7F7F7",
-  r:13,rLg:20,spring:"cubic-bezier(0.34,1.56,0.64,1)",ease:"cubic-bezier(0.25,0.46,0.45,0.94)",
+// ─── Theme ────────────────────────────────────────────────────────────────────
+const THEMES = {
+  light: {
+    bg:"#F2F2F7",card:"#FFFFFF",
+    label:"#000000",label2:"rgba(60,60,67,0.80)",label3:"rgba(60,60,67,0.55)",
+    sep:"rgba(60,60,67,0.12)",
+    blue:"#007AFF",green:"#34C759",orange:"#FF9500",red:"#FF3B30",
+    purple:"#AF52DE",teal:"#5AC8FA",indigo:"#5856D6",
+    gray:"#8E8E93",gray3:"#C7C7CC",gray4:"#D1D1D6",gray5:"#EFEFEF",gray6:"#F7F7F7",
+    r:13,rLg:20,spring:"cubic-bezier(0.34,1.56,0.64,1)",ease:"cubic-bezier(0.25,0.46,0.45,0.94)",
+  },
+  dark: {
+    bg:"#000000",card:"#1C1C1E",
+    label:"#FFFFFF",label2:"rgba(255,255,255,0.80)",label3:"rgba(255,255,255,0.45)",
+    sep:"rgba(255,255,255,0.10)",
+    blue:"#0A84FF",green:"#30D158",orange:"#FF9F0A",red:"#FF453A",
+    purple:"#BF5AF2",teal:"#64D2FF",indigo:"#5E5CE6",
+    gray:"#8E8E93",gray3:"#48484A",gray4:"#3A3A3C",gray5:"#2C2C2E",gray6:"#1C1C1E",
+    r:13,rLg:20,spring:"cubic-bezier(0.34,1.56,0.64,1)",ease:"cubic-bezier(0.25,0.46,0.45,0.94)",
+  },
 };
 
-const GS=()=>(
+// T is a mutable proxy — components read from it directly.
+// Calling applyTheme(isDark) mutates T in-place so all existing
+// T.blue / T.card references pick up new values on next render.
+const T = { ...THEMES.light };
+function applyTheme(dark) {
+  const src = dark ? THEMES.dark : THEMES.light;
+  Object.keys(src).forEach(k => { T[k] = src[k]; });
+}
+
+function useTheme() {
+  const [dark, setDark] = useState(() => {
+    try { return localStorage.getItem("crm_theme") === "dark"; } catch { return false; }
+  });
+  const toggle = () => setDark(d => {
+    const next = !d;
+    applyTheme(next);
+    try { localStorage.setItem("crm_theme", next ? "dark" : "light"); } catch {}
+    return next;
+  });
+  // Apply saved theme on first render
+  useEffect(() => { applyTheme(dark); }, []); // eslint-disable-line
+  return { dark, toggle };
+}
+
+const GS=({dark=false})=>(
   <style>{`
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0;}
-    html,body{height:100%;width:100%;overflow:hidden;background:#FFFFFF;touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y;}
-    body{margin:0;background:#fff;}
-    input,textarea{-webkit-appearance:none;font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
+    html,body{height:100%;width:100%;overflow:hidden;background:${dark?"#000000":T.bg};touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y;}
+    body{margin:0;background:${dark?"#000000":T.bg};}
+    input,textarea{-webkit-appearance:none;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color-scheme:${dark?"dark":"light"};}
     ::-webkit-scrollbar{display:none;}
-    /* Prevent all pinch-zoom and double-tap zoom */
     html{touch-action:manipulation;}
     body{touch-action:manipulation;}
     @keyframes fadeIn{from{opacity:0}to{opacity:1}}
@@ -662,7 +901,6 @@ const GS=()=>(
     .sheet-in{animation:sheetIn 0.36s cubic-bezier(0.34,1.56,0.64,1) both;}
     .tap{transition:transform 0.11s ease,opacity 0.11s ease;cursor:pointer;user-select:none;}
     .tap:active{transform:scale(0.96);opacity:0.75;}
-    /* PWA safe area support for iPhone notch and home indicator */
     .safe-top{padding-top:env(safe-area-inset-top, 44px);}
     .safe-bottom{padding-bottom:env(safe-area-inset-bottom, 20px);}
   `}</style>
@@ -842,7 +1080,26 @@ const CLIENT_STATUS={
 };
 
 // ─── Intelligence Engine ──────────────────────────────────────────────────────
-// Analyzes all app data and generates prioritized next-best-action recommendations
+const PROSPECT_STATUS_META={
+  prospect:  {label:"Prospect",  color:T.gray},
+  submitted: {label:"Submitted", color:T.blue},
+  interviewing:{label:"Interview",color:T.purple},
+  offer:     {label:"Offer",     color:T.orange},
+  placed:    {label:"Placed",    color:T.green},
+  rejected:  {label:"Rejected",  color:T.red},
+};
+// Analyzes all app data and generates prioritized next-best-action recommendations.
+// Minimum wait times before recommending action — prevents nagging right after adding records.
+const NBA_WAIT = {
+  offerFollowUp:     1,  // days — offer stage: follow up after 1 day (time-sensitive)
+  interviewPrep:     1,  // days — interview stage: prep reminder after 1 day
+  screeningReEngage: 5,  // days — screening: re-engage after 5 days silence
+  sourcedOutreach:   7,  // days — sourced: first outreach after 1 week
+  hotLead:           2,  // days — hot lead: nudge after 2 days
+  clientCheckIn:     7,  // days — active client: check in after 1 week
+  clientRetainer:    5,  // days — pending retainer: chase after 5 days
+};
+
 function useIntelligence(contacts,jobs,clients){
   return useMemo(()=>{
     const actions=[];
@@ -850,33 +1107,33 @@ function useIntelligence(contacts,jobs,clients){
 
     // Candidate-based actions
     contacts.forEach(c=>{
-      if(c.stage==="Offer"&&c.lastContactDays>=1){
+      if(c.stage==="Offer"&&c.lastContactDays>=NBA_WAIT.offerFollowUp){
         actions.push({id:id(),priority:"critical",type:"candidate",person:c.name,avatar:c.avatar,icon:"phone",iconBg:"rgba(255,59,48,0.12)",iconColor:T.red,
           title:`Follow up with ${c.name}`,subtitle:`Offer stage · ${c.lastContact} since last contact`,
           action:`Call ${c.name} to confirm offer acceptance and start date. They mentioned wanting more equity — come prepared with revised package or clear rationale.`,
           tags:["Offer","Urgent"],color:T.red});
       }
-      if(c.stage==="Interview"&&c.lastContactDays>=2){
+      if(c.stage==="Interview"&&c.lastContactDays>=NBA_WAIT.interviewPrep){
         actions.push({id:id(),priority:"high",type:"candidate",person:c.name,avatar:c.avatar,icon:"send",iconBg:"rgba(0,122,255,0.12)",iconColor:T.blue,
           title:`Prep ${c.name} for interview`,subtitle:`Interview stage · ${c.lastContact} since last contact`,
           action:`Send interview prep materials to ${c.name}. Review the JD together and coach on the specific panel format. Ask for their availability confirmation.`,
           tags:["Interview","Prep"],color:T.blue});
       }
-      if(c.stage==="Screening"&&c.lastContactDays>=4){
+      if(c.stage==="Screening"&&c.lastContactDays>=NBA_WAIT.screeningReEngage){
         actions.push({id:id(),priority:"medium",type:"candidate",person:c.name,avatar:c.avatar,icon:"phone",iconBg:"rgba(255,149,0,0.12)",iconColor:T.orange,
           title:`Re-engage ${c.name}`,subtitle:`Screening · ${c.lastContact} since last contact`,
           action:`It's been ${c.lastContact} since you last spoke with ${c.name}. Check in on their job search status — candidates at screening go cold quickly. Offer to schedule the next step.`,
           tags:["Screening","Re-engage"],color:T.orange});
       }
-      if(c.stage==="Sourced"&&c.lastContactDays>=3){
+      if(c.stage==="Sourced"&&c.lastContactDays>=NBA_WAIT.sourcedOutreach){
         actions.push({id:id(),priority:"medium",type:"candidate",person:c.name,avatar:c.avatar,icon:"mail",iconBg:"rgba(90,200,250,0.15)",iconColor:T.teal,
-          title:`First outreach to ${c.name}`,subtitle:`Sourced · Not yet contacted`,
-          action:`${c.name} was sourced ${c.lastContact} ago and hasn't been contacted yet. Send an introductory email referencing their ${c.tags[0]||"background"} experience. Keep it short and specific.`,
+          title:`First outreach to ${c.name}`,subtitle:`Sourced · No contact for ${c.lastContact}`,
+          action:`${c.name} was sourced ${c.lastContact} ago and hasn't been contacted yet. Send an introductory email referencing their ${(c.tags||[])[0]||"background"} experience. Keep it short and specific.`,
           tags:["Sourced","First Contact"],color:T.teal});
       }
-      if(c.hot&&c.stage!=="Placed"&&c.stage!=="Offer"){
+      if(c.hot&&c.stage!=="Placed"&&c.stage!=="Offer"&&c.lastContactDays>=NBA_WAIT.hotLead){
         actions.push({id:id(),priority:"high",type:"candidate",person:c.name,avatar:c.avatar,icon:"fire",iconBg:"rgba(255,59,48,0.10)",iconColor:T.red,
-          title:`Hot lead needs attention: ${c.name}`,subtitle:`Flagged · ${c.stage} stage`,
+          title:`Hot lead needs attention: ${c.name}`,subtitle:`Flagged · ${c.stage} stage · ${c.lastContact} since contact`,
           action:`${c.name} is flagged as a hot lead in ${c.stage}. ${c.notes} Prioritize moving them forward — every day risks them going to another opportunity or recruiter.`,
           tags:["Hot","Priority"],color:T.red});
       }
@@ -905,13 +1162,13 @@ function useIntelligence(contacts,jobs,clients){
 
     // Client-based actions
     clients.filter(c=>c.status==="Active"||c.status==="Pending").forEach(client=>{
-      if(client.lastOutreachDays>=5&&client.status==="Active"){
+      if(client.lastOutreachDays>=NBA_WAIT.clientCheckIn&&client.status==="Active"){
         actions.push({id:id(),priority:"medium",type:"client",person:client.name,icon:"building2",iconBg:"rgba(88,86,214,0.10)",iconColor:T.indigo,
           title:`Check in with ${client.name}`,subtitle:`${client.industry} · Last outreach ${client.lastOutreach} ago`,
           action:`It's been ${client.lastOutreach} since you last touched ${client.name}. Send a brief pipeline update to ${client.primaryContact?.name||"primary contact"} (${client.primaryContact?.title||""}). Share any new relevant candidate profiles and reaffirm your commitment to filling their ${client.openRoles} open role${client.openRoles!==1?"s":""}. Keep the relationship warm.`,
           tags:["Check-in","Relationship"],color:T.indigo});
       }
-      if(client.status==="Pending"&&client.lastOutreachDays>=3){
+      if(client.status==="Pending"&&client.lastOutreachDays>=NBA_WAIT.clientRetainer){
         actions.push({id:id(),priority:"high",type:"client",person:client.name,icon:"alert",iconBg:"rgba(255,149,0,0.12)",iconColor:T.orange,
           title:`Follow up: ${client.name} retainer`,subtitle:`Pending signature · ${client.lastOutreach} since contact`,
           action:`${client.name} has a pending engagement for ${client.openRoles} role${client.openRoles!==1?"s":""}. Contact ${client.primaryContact?.name||"the primary contact"} to check on retainer status. Consider offering a brief call to discuss any blockers — closed-lost deals often die here.`,
@@ -968,7 +1225,7 @@ function SectionHead({title,sub,cta,onCta}){
   return <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",padding:"16px 20px 8px"}}><div><div style={{...sf(17,700,T.label)}}>{title}</div>{sub&&<div style={{...sf(12,400,T.label3),marginTop:1}}>{sub}</div>}</div>{cta&&<span className="tap" onClick={onCta} style={{...sf(14,500,T.blue),cursor:"pointer"}}>{cta}</span>}</div>;
 }
 function SubTabStrip({tabs,active,onChange}){
-  return <div style={{display:"flex",borderBottom:`0.5px solid ${T.sep}`,background:"rgba(255,255,255,0.6)"}}>{tabs.map(t=>(<div key={t.id} className="tap" onClick={()=>onChange(t.id)} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,padding:"10px 4px",borderBottom:`2px solid ${active===t.id?T.blue:"transparent"}`,transition:"border-color 0.18s"}}><Icon name={t.icon} size={13} color={active===t.id?T.blue:T.label3} strokeWidth={1.8}/><span style={{...sf(12,active===t.id?600:400,active===t.id?T.blue:T.label3)}}>{t.label}</span></div>))}</div>;
+  return <div style={{display:"flex",borderBottom:`0.5px solid ${T.sep}`,background:T.card}}>{tabs.map(t=>(<div key={t.id} className="tap" onClick={()=>onChange(t.id)} style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,padding:"10px 4px",borderBottom:`2px solid ${active===t.id?T.blue:"transparent"}`,transition:"border-color 0.18s"}}><Icon name={t.icon} size={13} color={active===t.id?T.blue:T.label3} strokeWidth={1.8}/><span style={{...sf(12,active===t.id?600:400,active===t.id?T.blue:T.label3)}}>{t.label}</span></div>))}</div>;
 }
 
 // ─── KPI Item — expandable with full profile detail ──────────────────────────
@@ -1304,18 +1561,31 @@ INSTRUCTIONS:
   return data.content?.map(b=>b.text||"").join("").trim()||"";
 }
 
-function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}){
-  const [open,setOpen]=useState(false);
+function ExpandableJobCard({job,setJobs,last,contacts,clients,setClients,gmail,logActivity,focusedJobId,onClearFocus}){
+  const isFocused = focusedJobId === job.id;
+  const [open,setOpen]=useState(isFocused);
   const [tab,setTab]=useState("details");
+
+  // When focused from outside (client card tap), open and scroll into view
+  const cardRef = useRef(null);
+  useEffect(()=>{
+    if(isFocused){
+      setOpen(true);
+      setTab("details");
+      setTimeout(()=>{ cardRef.current?.scrollIntoView({behavior:"smooth",block:"start"}); }, 120);
+      onClearFocus?.();
+    }
+  },[isFocused]); // eslint-disable-line
   const [editing,setEditing]=useState(false);
   const [draft,setDraft]=useState({...job});
 
-  // Prospects state
+  // Prospect state
   const prospects = job.prospects||[];
   const [showAddProspect,setShowAddProspect]=useState(false);
   const [prospectSearch,setProspectSearch]=useState("");
-  const [submitting,setSubmitting]=useState(null); // contactId being submitted
-  const [submitDone,setSubmitDone]=useState({}); // {contactId: true}
+  const [submitting,setSubmitting]=useState(null);
+  const [submitDone,setSubmitDone]=useState({});
+  const [prospectModal,setProspectModal]=useState(null); // contactId of open modal
 
   // Job Pitch state
   const [jobPitch,setJobPitch]=useState(job.jobPitch||"");
@@ -1329,9 +1599,12 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
   const hasDescription=!!(job.description?.trim());
   const prospectCount = prospects.length;
 
-  // Find the client linked to this job and its primary contact
-  const linkedClient = clients?.find(cl=>cl.linkedJobs?.includes(job.id));
-  const primaryContact = linkedClient?.contacts?.find(ct=>ct.primary) || linkedClient?.contacts?.[0];
+  // Find the client linked to this job — prefer explicit clientId, fall back to linkedJobs scan
+  const linkedClient = clients?.find(cl=>cl.id===job.clientId) || clients?.find(cl=>(cl.linkedJobs||[]).includes(job.id));
+  // Find the submission contact — prefer explicit clientContactId, fall back to primary/first
+  const primaryContact = linkedClient?.contacts?.find(ct=>ct.id===job.clientContactId)
+    || linkedClient?.contacts?.find(ct=>ct.primary)
+    || linkedClient?.contacts?.[0];
 
   const persistPitch=(pitch)=>{
     setJobPitch(pitch);
@@ -1405,15 +1678,6 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
     setSubmitting(null);
   };
 
-  const PROSPECT_STATUS_META={
-    prospect:  {label:"Prospect",  color:T.gray},
-    submitted: {label:"Submitted", color:T.blue},
-    interviewing:{label:"Interview",color:T.purple},
-    offer:     {label:"Offer",     color:T.orange},
-    placed:    {label:"Placed",    color:T.green},
-    rejected:  {label:"Rejected",  color:T.red},
-  };
-
   const prospectsLabel = prospectCount > 0 ? `Prospects (${prospectCount})` : "Prospects";
 
   const TABS=[
@@ -1424,7 +1688,7 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
   ];
 
   return(
-    <div style={{borderBottom:last&&!open?"none":`0.5px solid ${T.sep}`}}>
+    <div ref={cardRef} style={{borderBottom:last&&!open?"none":`0.5px solid ${T.sep}`}}>
       <div className="tap" onClick={()=>setOpen(o=>!o)} style={{display:"flex",alignItems:"center",gap:12,padding:"13px 16px",background:T.card}}>
         <IconBadge name={job.urgent?"alert":"briefcase"} bg={job.urgent?"rgba(255,59,48,0.10)":"rgba(0,122,255,0.08)"} iconColor={job.urgent?T.red:T.blue} size={38}/>
         <div style={{flex:1,minWidth:0}}>
@@ -1441,7 +1705,7 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
         <Chevron open={open}/>
       </div>
       {open&&(
-        <div className="expand" style={{background:"#F8F8FA",borderTop:`0.5px solid ${T.sep}`}}>
+        <div className="expand" style={{background:T.bg,borderTop:`0.5px solid ${T.sep}`}}>
           <SubTabStrip tabs={TABS} active={tab} onChange={setTab}/>
           <div style={{padding:"14px 16px 4px"}}>
 
@@ -1462,9 +1726,37 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
                   <div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:6}}>Status</div>
                   <div style={{display:"flex",gap:7}}>{["Active","Pending","Filled"].map(s=>(<div key={s} className="tap" onClick={()=>setDraft(d=>({...d,stage:s}))} style={{borderRadius:20,padding:"6px 14px",...sf(13,draft.stage===s?600:400,draft.stage===s?"#fff":T.gray),background:draft.stage===s?T.blue:T.gray5,transition:"all 0.18s"}}>{s}</div>))}</div>
                 </div>
+                {/* Client contact selector in edit mode */}
+                {linkedClient&&(linkedClient.contacts||[]).length>0&&(
+                  <div style={{marginBottom:14}}>
+                    <div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:6}}>Submission Contact</div>
+                    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                      {(linkedClient.contacts||[]).map(ct=>(
+                        <div key={ct.id} className="tap" onClick={()=>setDraft(d=>({...d,clientContactId:ct.id}))}
+                          style={{display:"flex",alignItems:"center",gap:9,padding:"8px 10px",borderRadius:10,background:draft.clientContactId===ct.id?"rgba(52,199,89,0.08)":T.gray5,border:`0.5px solid ${draft.clientContactId===ct.id?T.green:T.gray4}`}}>
+                          <Avatar initials={(ct.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)} size={28}/>
+                          <div style={{flex:1}}><div style={{...sf(13,600,T.label)}}>{ct.name}</div><div style={{...sf(11,400,T.label3)}}>{ct.title}</div></div>
+                          {draft.clientContactId===ct.id&&<Icon name="check" size={14} color={T.green} strokeWidth={2.5}/>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             ):(
               <div style={{paddingBottom:10}}>
+                {/* Client/contact badge */}
+                {linkedClient&&(
+                  <div style={{background:"rgba(0,122,255,0.05)",borderRadius:10,padding:"10px 12px",marginBottom:10,border:`0.5px solid rgba(0,122,255,0.15)`}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <LogoBadge letters={linkedClient.logo} color={linkedClient.logoColor} size={30}/>
+                      <div style={{flex:1}}>
+                        <div style={{...sf(13,600,T.label)}}>{linkedClient.name}</div>
+                        {primaryContact&&<div style={{...sf(11,400,T.label3),marginTop:1}}>Contact: {primaryContact.name} · {primaryContact.email}</div>}
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div style={{...sf(13,400,T.label2),lineHeight:1.6,marginBottom:10}}>{job.notes}</div>
                 <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
                   <Pill label={`${job.candidates} candidates`} color={T.blue}/>
@@ -1495,7 +1787,7 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
                     <input
                       value={prospectSearch} onChange={e=>setProspectSearch(e.target.value)}
                       placeholder="Search candidates…" autoFocus
-                      style={{width:"100%",background:T.gray5,border:"none",outline:"none",borderRadius:9,padding:"8px 12px",...sf(14,400,T.label),marginBottom:8}}
+                      style={{width:"100%",background:T.gray5,border:`0.5px solid ${T.sep}`,outline:"none",borderRadius:9,padding:"8px 12px",color:T.label,...sf(14,400,T.label),marginBottom:8}}
                     />
                     <div style={{maxHeight:180,overflowY:"auto"}}>
                       {(contacts||[])
@@ -1537,48 +1829,19 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
                   const cand=contacts?.find(c=>c.id===p.contactId);
                   if(!cand) return null;
                   const meta=PROSPECT_STATUS_META[p.status]||PROSPECT_STATUS_META.prospect;
-                  const isSubmitting=submitting===p.contactId;
-                  const isDone=submitDone[p.contactId];
                   return(
-                    <div key={p.contactId} style={{background:T.card,borderRadius:12,marginBottom:10,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
-                      {/* Candidate row */}
-                      <div style={{display:"flex",alignItems:"center",gap:10,padding:"11px 12px"}}>
-                        <Avatar initials={cand.avatar} size={36}/>
+                    <div key={p.contactId} className="tap" onClick={()=>setProspectModal(p.contactId)}
+                      style={{background:T.card,borderRadius:12,marginBottom:10,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:10,padding:"12px 14px"}}>
+                        <Avatar initials={cand.avatar} size={38}/>
                         <div style={{flex:1,minWidth:0}}>
-                          <div style={{...sf(13,600,T.label)}}>{cand.name}</div>
-                          <div style={{...sf(11,400,T.label3),marginTop:1}}>{cand.title} · {cand.company}</div>
+                          <div style={{...sf(14,600,T.label)}}>{cand.name}</div>
+                          <div style={{...sf(12,400,T.label3),marginTop:1}}>{cand.title} · {cand.company}</div>
                         </div>
-                        <Pill label={meta.label} color={meta.color}/>
-                      </div>
-
-                      {/* Status selector */}
-                      <div style={{borderTop:`0.5px solid ${T.sep}`,padding:"8px 12px",display:"flex",gap:5,overflowX:"auto"}}>
-                        {Object.entries(PROSPECT_STATUS_META).map(([s,m])=>(
-                          <div key={s} className="tap" onClick={()=>updateProspectStatus(p.contactId,s)}
-                            style={{borderRadius:16,padding:"4px 10px",flexShrink:0,background:p.status===s?`${m.color}18`:T.gray5,...sf(11,p.status===s?700:400,p.status===s?m.color:T.gray),border:`0.5px solid ${p.status===s?m.color:T.gray4}`,cursor:"pointer"}}>
-                            {m.label}
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Actions */}
-                      <div style={{borderTop:`0.5px solid ${T.sep}`,padding:"8px 12px",display:"flex",gap:7,alignItems:"center"}}>
-                        {/* Submit to client */}
-                        {gmail?.gmailUser&&primaryContact&&p.status!=="placed"&&p.status!=="rejected"&&(
-                          <button className="tap" onClick={()=>submitCandidate(p.contactId)} disabled={isSubmitting}
-                            style={{display:"flex",alignItems:"center",gap:5,border:"none",borderRadius:9,padding:"6px 12px",background:isDone?"rgba(52,199,89,0.12)":p.status==="submitted"?"rgba(0,122,255,0.08)":"rgba(0,122,255,0.10)",color:isDone?T.green:T.blue,...sf(12,600),cursor:"pointer"}}>
-                            <Icon name={isDone?"check":"send"} size={13} color={isDone?T.green:T.blue} strokeWidth={2}/>
-                            {isDone?"Sent!":(isSubmitting?"Sending…":p.status==="submitted"?"Resubmit":"Submit to Client")}
-                          </button>
-                        )}
-                        {!gmail?.gmailUser&&(
-                          <span style={{...sf(11,400,T.label3)}}>Connect Gmail to submit</span>
-                        )}
-                        {primaryContact&&<span style={{...sf(11,400,T.label3),marginLeft:4}}>→ {primaryContact.name}</span>}
-                        <button className="tap" onClick={()=>removeProspect(p.contactId)}
-                          style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:4,border:"none",background:"transparent",color:T.gray3,...sf(11,400),cursor:"pointer"}}>
-                          <Icon name="trash" size={12} color={T.gray3} strokeWidth={1.8}/>Remove
-                        </button>
+                        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5}}>
+                          <Pill label={meta.label} color={meta.color}/>
+                          <Icon name="chevronRight" size={13} color={T.gray3} strokeWidth={2}/>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1698,6 +1961,27 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
           </div>
         </div>
       )}
+
+      {/* Prospect detail modal */}
+      {prospectModal&&(()=>{
+        const p = prospects.find(pr=>pr.contactId===prospectModal);
+        const cand = contacts?.find(c=>c.id===prospectModal);
+        if(!p||!cand) return null;
+        return(
+          <ProspectModal
+            prospect={p}
+            candidate={cand}
+            job={job}
+            linkedClient={linkedClient}
+            primaryContact={primaryContact}
+            onClose={()=>setProspectModal(null)}
+            onUpdateStatus={(contactId,status)=>updateProspectStatus(contactId,status)}
+            onSend={gmail?.sendEmail||(() => Promise.resolve(false))}
+            logActivity={logActivity}
+            gmail={gmail}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -1924,7 +2208,7 @@ function ExpandableContactCard({contact,setContacts,last,gmail,logActivity,jobs,
         <Chevron open={open}/>
       </div>
       {open&&(
-        <div className="expand" style={{background:"#F8F8FA",borderTop:`0.5px solid ${T.sep}`}}>
+        <div className="expand" style={{background:T.bg,borderTop:`0.5px solid ${T.sep}`}}>
           <SubTabStrip tabs={TABS} active={tab} onChange={setTab}/>
 
           {/* ── PROFILE TAB ── */}
@@ -1980,7 +2264,7 @@ function ExpandableContactCard({contact,setContacts,last,gmail,logActivity,jobs,
                     <GhostBtn label="Call" icon="phone" color={T.green} onPress={()=>{}}/>
                   </a>
                 )}
-                {!editing&&<GhostBtn label="Email" icon="mail" color={T.blue} onPress={()=>{gmail?.openCompose({email:contact.email,name:contact.name,subject:`Following up — ${contact.name}`,body:"Hi,\n\n"});logActivity?.("emailSent",`Email composed to ${contact.name}`,`To: ${contact.email}`);}}/>}
+                {!editing&&<GhostBtn label="Email" icon="mail" color={T.blue} onPress={()=>gmail?.openCompose({email:contact.email,name:contact.name,subject:`Following up — ${contact.name}`,body:"Hi,\n\n"})}/>}
                 {editing&&<GhostBtn label="Cancel" color={T.gray} onPress={cancel}/>}
                 {/* Inline Hot Lead toggle */}
                 {!editing&&(
@@ -2170,7 +2454,7 @@ function ExpandableActivityCard({act,setActivities,last}){
         <div style={{flex:1}}><div style={{...sf(14,400,T.label),lineHeight:1.4}}>{act.text}</div><div style={{...sf(12,400,T.label3),marginTop:3}}>{act.time}</div></div>
         <Chevron open={open}/>
       </div>
-      {open&&<div className="expand" style={{background:"#F8F8FA",borderTop:`0.5px solid ${T.sep}`}}><div style={{padding:"14px 16px"}}>
+      {open&&<div className="expand" style={{background:T.bg,borderTop:`0.5px solid ${T.sep}`}}><div style={{padding:"14px 16px"}}>
         {editing?(<><div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>Title</div><input value={text} onChange={e=>setText(e.target.value)} style={{width:"100%",background:T.card,border:`0.5px solid ${T.gray4}`,borderRadius:9,padding:"9px 12px",...sf(15),outline:"none",marginBottom:12}}/><div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>Details</div><textarea value={detail} onChange={e=>setDetail(e.target.value)} rows={3} style={{width:"100%",background:T.card,border:`0.5px solid ${T.gray4}`,borderRadius:9,padding:"9px 12px",...sf(14,400,T.label),outline:"none",resize:"none",lineHeight:1.6}}/></>)
         :<div style={{...sf(13,400,T.label2),lineHeight:1.65}}>{act.detail}</div>}
         <div style={{display:"flex",gap:8,marginTop:12}}><GhostBtn label={editing?"Save":"Edit Note"} icon={editing?"check":"edit"} color={T.blue} onPress={editing?save:()=>setEditing(true)}/>{editing&&<GhostBtn label="Cancel" color={T.gray} onPress={()=>{setText(act.text);setDetail(act.detail);setEditing(false);}}/>}</div>
@@ -2254,18 +2538,30 @@ function ClientMiniModal({modal,onClose}){
   );
 }
 
-// ─── Client Contact Card — expandable with full profile + activity feed ───────
-function ClientContactCard({ct,isOpen,onToggle,onRemove,gmail,logActivity}){
-  const initials=ct.name.split(" ").map(n=>n[0]).join("").slice(0,2);
-  const [activityTab,setActivityTab]=useState("activity"); // "activity" | "addNote"
+// ─── Client Contact Card — expandable with edit mode + primary toggle ─────────
+function ClientContactCard({ct,isOpen,onToggle,onRemove,onUpdate,onSetPrimary,gmail,logActivity}){
+  const initials=(ct.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2);
+  const [activityTab,setActivityTab]=useState("activity");
   const [newNote,setNewNote]=useState("");
   const [activities,setActivities]=useState(ct.activities||[]);
+  const [editing,setEditing]=useState(false);
+  const [draft,setDraft]=useState({name:ct.name,title:ct.title,email:ct.email,phone:ct.phone});
 
   const addNote=()=>{
     if(!newNote.trim())return;
-    const entry={id:Date.now(),type:"note",text:newNote.trim(),date:"Mar 27, 2025",time:"Just now"};
+    const entry={id:Date.now(),type:"note",text:newNote.trim(),date:new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}),time:"Just now"};
     setActivities(p=>[entry,...p]);
     setNewNote("");setActivityTab("activity");
+  };
+
+  const saveEdit=()=>{
+    onUpdate?.({...ct,...draft});
+    setEditing(false);
+  };
+
+  const cancelEdit=()=>{
+    setDraft({name:ct.name,title:ct.title,email:ct.email,phone:ct.phone});
+    setEditing(false);
   };
 
   const activityIconMap={
@@ -2279,13 +2575,13 @@ function ClientContactCard({ct,isOpen,onToggle,onRemove,gmail,logActivity}){
   return(
     <div style={{background:T.card,borderRadius:12,marginBottom:10,overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.07)"}}>
       {/* Collapsed header row */}
-      <div className="tap" onClick={onToggle}
+      <div className="tap" onClick={()=>{if(!editing)onToggle();}}
         style={{display:"flex",alignItems:"center",gap:11,padding:"12px 13px"}}>
         <Avatar initials={initials} size={40}/>
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
             <span style={{...sf(14,600,T.label)}}>{ct.name}</span>
-            {ct.primary&&<span style={{...sf(10,600,T.blue),background:"rgba(0,122,255,0.10)",borderRadius:4,padding:"1px 6px",flexShrink:0}}>Primary</span>}
+            {ct.primary&&<span style={{...sf(10,700,T.blue),background:"rgba(0,122,255,0.10)",borderRadius:4,padding:"1px 6px",flexShrink:0}}>Primary</span>}
           </div>
           <div style={{...sf(12,400,T.label3),marginTop:2}}>{ct.title}</div>
         </div>
@@ -2299,97 +2595,133 @@ function ClientContactCard({ct,isOpen,onToggle,onRemove,gmail,logActivity}){
         <div style={{borderTop:`0.5px solid ${T.sep}`}}>
           <div style={{padding:"12px 13px 0"}}>
 
-            {/* ── Contact info rows — phone tappable to dial ── */}
-            {[
-              {icon:"briefcase",value:ct.title,  color:T.label3, href:null},
-              {icon:"mail",     value:ct.email,   color:T.blue,   href:null},
-              {icon:"phone",    value:ct.phone,   color:T.green,  href:`tel:${ct.phone}`},
-            ].filter(r=>r.value).map(r=>(
-              r.href
-                ? <a key={r.value} href={r.href} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`,textDecoration:"none"}}>
-                    <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
-                    <span style={{...sf(13,400,r.color)}}>{r.value}</span>
-                  </a>
-                : <div key={r.value} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`}}>
-                    <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
-                    <span style={{...sf(13,400,T.label2)}}>{r.value}</span>
+            {editing?(
+              /* ── Edit mode ── */
+              <div>
+                <div style={{...sf(11,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>Edit Contact</div>
+                {[
+                  {k:"name",  l:"Full Name", ph:"Jane Smith"},
+                  {k:"title", l:"Title",     ph:"VP of Talent"},
+                  {k:"email", l:"Email",     ph:"jane@company.com"},
+                  {k:"phone", l:"Phone",     ph:"+1 415 555 0000"},
+                ].map((f,i,a)=>(
+                  <div key={f.k} style={{borderBottom:i<a.length-1?`0.5px solid ${T.sep}`:"none",paddingBottom:i<a.length-1?0:10}}>
+                    <div style={{display:"flex",alignItems:"center",padding:"8px 0",gap:10}}>
+                      <div style={{width:56,flexShrink:0,...sf(12,400,T.label3)}}>{f.l}</div>
+                      <input
+                        value={draft[f.k]||""} onChange={e=>setDraft(d=>({...d,[f.k]:e.target.value}))}
+                        placeholder={f.ph}
+                        style={{flex:1,border:"none",outline:"none",...sf(14,400,T.label),background:"transparent"}}
+                      />
+                    </div>
                   </div>
-            ))}
+                ))}
+                <div style={{display:"flex",gap:7,marginTop:12,marginBottom:14,flexWrap:"wrap"}}>
+                  <GhostBtn label="Save" icon="check" color={T.blue} onPress={saveEdit}/>
+                  <GhostBtn label="Cancel" color={T.gray} onPress={cancelEdit}/>
+                </div>
+              </div>
+            ):(
+              /* ── View mode ── */
+              <>
+                {/* Contact info rows */}
+                {[
+                  {icon:"briefcase",value:ct.title,  color:T.label3, href:null},
+                  {icon:"mail",     value:ct.email,   color:T.blue,   href:null},
+                  {icon:"phone",    value:ct.phone,   color:T.green,  href:`tel:${ct.phone}`},
+                ].filter(r=>r.value).map(r=>(
+                  r.href
+                    ? <a key={r.icon} href={r.href} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`,textDecoration:"none"}}>
+                        <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
+                        <span style={{...sf(13,400,r.color)}}>{r.value}</span>
+                      </a>
+                    : <div key={r.icon} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`}}>
+                        <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
+                        <span style={{...sf(13,400,T.label2)}}>{r.value}</span>
+                      </div>
+                ))}
 
-            {/* ── Quick actions ── */}
-            <div style={{display:"flex",gap:7,marginTop:11,marginBottom:14,flexWrap:"wrap"}}>
-              <a href={`tel:${ct.phone}`} style={{textDecoration:"none"}} onClick={()=>logActivity?.("callDialed",`Called ${ct.name} at ${ct.title}`,`Phone: ${ct.phone}`)}>
-                <GhostBtn label="Call" icon="phone" color={T.green} onPress={()=>{}}/>
-              </a>
-              <GhostBtn label="Email" icon="mail" color={T.blue} onPress={()=>{gmail?.openCompose({email:ct.email,name:ct.name,subject:`Following up`,body:"Hi,\n\n"});logActivity?.("emailSent",`Email composed to ${ct.name}`,`To: ${ct.email}`);}}/>
-              <button onClick={e=>{e.stopPropagation();onRemove(ct.id);}} className="tap"
-                style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5,border:"none",background:`${T.red}10`,borderRadius:8,padding:"6px 11px",color:T.red,...sf(12,600),cursor:"pointer"}}>
-                <Icon name="trash" size={12} color={T.red} strokeWidth={2}/>Remove
-              </button>
-            </div>
+                {/* Quick actions */}
+                <div style={{display:"flex",gap:7,marginTop:11,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+                  <a href={`tel:${ct.phone}`} style={{textDecoration:"none"}} onClick={()=>logActivity?.("callDialed",`Called ${ct.name} at ${ct.title}`,`Phone: ${ct.phone}`)}>
+                    <GhostBtn label="Call" icon="phone" color={T.green} onPress={()=>{}}/>
+                  </a>
+                  <GhostBtn label="Email" icon="mail" color={T.blue} onPress={()=>gmail?.openCompose({email:ct.email,name:ct.name,subject:`Following up`,body:"Hi,\n\n"})}/>
+                  <GhostBtn label="Edit" icon="edit" color={T.indigo} onPress={()=>setEditing(true)}/>
+
+                  {/* Primary toggle */}
+                  <div className="tap" onClick={()=>onSetPrimary?.(ct.id)}
+                    style={{display:"flex",alignItems:"center",gap:5,borderRadius:8,padding:"6px 10px",background:ct.primary?"rgba(0,122,255,0.10)":"rgba(142,142,147,0.10)",border:`0.5px solid ${ct.primary?T.blue:T.gray4}`,cursor:"pointer"}}>
+                    <Icon name="star" size={13} color={ct.primary?T.blue:T.gray3} strokeWidth={ct.primary?2.2:1.6}/>
+                    <span style={{...sf(12,600,ct.primary?T.blue:T.gray)}}>{ct.primary?"Primary":"Set Primary"}</span>
+                  </div>
+
+                  <button onClick={e=>{e.stopPropagation();onRemove(ct.id);}} className="tap"
+                    style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5,border:"none",background:`${T.red}10`,borderRadius:8,padding:"6px 11px",color:T.red,...sf(12,600),cursor:"pointer"}}>
+                    <Icon name="trash" size={12} color={T.red} strokeWidth={2}/>Remove
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* ── Activity section ── */}
-          <div style={{borderTop:`0.5px solid ${T.sep}`,padding:"12px 13px 14px"}}>
-            {/* Section header */}
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
-              <div style={{display:"flex",alignItems:"center",gap:7}}>
-                <Icon name="activity" size={14} color={T.label3} strokeWidth={1.8}/>
-                <span style={{...sf(12,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em"}}>Activity</span>
-                {activities.length>0&&<span style={{...sf(11,600,T.blue),background:"rgba(0,122,255,0.10)",borderRadius:10,padding:"1px 7px"}}>{activities.length}</span>}
+          {/* Activity section — only show in view mode */}
+          {!editing&&(
+            <div style={{borderTop:`0.5px solid ${T.sep}`,padding:"12px 13px 14px"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <Icon name="activity" size={14} color={T.label3} strokeWidth={1.8}/>
+                  <span style={{...sf(12,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em"}}>Activity</span>
+                  {activities.length>0&&<span style={{...sf(11,600,T.blue),background:"rgba(0,122,255,0.10)",borderRadius:10,padding:"1px 7px"}}>{activities.length}</span>}
+                </div>
+                {activityTab==="activity"&&(
+                  <div className="tap" onClick={()=>setActivityTab("addNote")}
+                    style={{display:"flex",alignItems:"center",gap:5,...sf(12,500,T.blue),cursor:"pointer"}}>
+                    <Icon name="plus" size={13} color={T.blue} strokeWidth={2.2}/>Note
+                  </div>
+                )}
               </div>
-              {activityTab==="activity"&&(
-                <div className="tap" onClick={()=>setActivityTab("addNote")}
-                  style={{display:"flex",alignItems:"center",gap:5,...sf(12,500,T.blue),cursor:"pointer"}}>
-                  <Icon name="plus" size={13} color={T.blue} strokeWidth={2.2}/>Note
+
+              {activityTab==="addNote"&&(
+                <div style={{background:T.gray5,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
+                  <div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>New Note</div>
+                  <textarea value={newNote} onChange={e=>setNewNote(e.target.value)} autoFocus
+                    placeholder="Log a call, email, meeting, or note…" rows={3}
+                    style={{width:"100%",border:"none",outline:"none",...sf(13,400,T.label),background:"transparent",resize:"none",lineHeight:1.6}}/>
+                  <div style={{display:"flex",gap:7,marginTop:8}}>
+                    <GhostBtn label="Save" icon="check" color={T.blue} onPress={addNote}/>
+                    <GhostBtn label="Cancel" color={T.gray} onPress={()=>{setNewNote("");setActivityTab("activity");}}/>
+                  </div>
                 </div>
               )}
+
+              {activities.length===0&&activityTab!=="addNote"&&(
+                <div style={{textAlign:"center",padding:"14px 0"}}>
+                  <Icon name="activity" size={24} color={T.gray4} strokeWidth={1.4}/>
+                  <div style={{...sf(12,400,T.label3),marginTop:6}}>No activity yet</div>
+                  <div className="tap" onClick={()=>setActivityTab("addNote")} style={{...sf(12,500,T.blue),marginTop:4,cursor:"pointer"}}>Log first note ›</div>
+                </div>
+              )}
+
+              {activities.map((a,i)=>{
+                const meta=activityIconMap[a.type]||activityIconMap.note;
+                return(
+                  <div key={a.id} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"8px 0",borderBottom:i<activities.length-1?`0.5px solid ${T.sep}`:"none"}}>
+                    <div style={{width:28,height:28,borderRadius:8,background:meta.bg,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>
+                      <Icon name={meta.name} size={14} color={meta.color} strokeWidth={1.8}/>
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{...sf(13,400,T.label),lineHeight:1.5}}>{a.text}</div>
+                      <div style={{...sf(11,400,T.label3),marginTop:3}}>{a.date} · {a.time}</div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+          )}
 
-            {/* Add note form */}
-            {activityTab==="addNote"&&(
-              <div style={{background:T.bg,borderRadius:10,padding:"10px 12px",marginBottom:10}}>
-                <div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>New Note</div>
-                <textarea
-                  value={newNote} onChange={e=>setNewNote(e.target.value)}
-                  autoFocus placeholder="Log a call, email, meeting, or note…" rows={3}
-                  style={{width:"100%",border:"none",outline:"none",...sf(13,400,T.label),background:"transparent",resize:"none",lineHeight:1.6}}
-                />
-                <div style={{display:"flex",gap:7,marginTop:8}}>
-                  <GhostBtn label="Save" icon="check" color={T.blue} onPress={addNote}/>
-                  <GhostBtn label="Cancel" color={T.gray} onPress={()=>{setNewNote("");setActivityTab("activity");}}/>
-                </div>
-              </div>
-            )}
-
-            {/* Activity feed */}
-            {activities.length===0&&activityTab!=="addNote"&&(
-              <div style={{textAlign:"center",padding:"14px 0"}}>
-                <Icon name="activity" size={24} color={T.gray4} strokeWidth={1.4}/>
-                <div style={{...sf(12,400,T.label3),marginTop:6}}>No activity yet</div>
-                <div className="tap" onClick={()=>setActivityTab("addNote")}
-                  style={{...sf(12,500,T.blue),marginTop:4,cursor:"pointer"}}>Log first note ›</div>
-              </div>
-            )}
-
-            {activities.map((a,i)=>{
-              const meta=activityIconMap[a.type]||activityIconMap.note;
-              return(
-                <div key={a.id} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"8px 0",borderBottom:i<activities.length-1?`0.5px solid ${T.sep}`:"none"}}>
-                  <div style={{width:28,height:28,borderRadius:8,background:meta.bg,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>
-                    <Icon name={meta.name} size={14} color={meta.color} strokeWidth={1.8}/>
-                  </div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{...sf(13,400,T.label),lineHeight:1.5}}>{a.text}</div>
-                    <div style={{...sf(11,400,T.label3),marginTop:3}}>{a.date} · {a.time}</div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* ── Gmail Emails section ── */}
-          {gmail?.gmailUser&&(
+          {/* Gmail Emails */}
+          {!editing&&gmail?.gmailUser&&(
             <div style={{borderTop:`0.5px solid ${T.sep}`,padding:"12px 13px 14px"}}>
               <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}>
                 <div style={{width:16,height:16,borderRadius:4,background:"#EA4335",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -2411,21 +2743,23 @@ function ClientContactCard({ct,isOpen,onToggle,onRemove,gmail,logActivity}){
   );
 }
 
-function ClientContactsList({contacts,openContactId,onToggle,onRemove,gmail,logActivity}){
+function ClientContactsList({contacts,openContactId,onToggle,onRemove,onUpdate,onSetPrimary,gmail,logActivity}){
   return(
     <div>
       {contacts.map(ct=>(
-        <ClientContactCard key={ct.id} ct={ct} isOpen={openContactId===ct.id} onToggle={()=>onToggle(ct.id)} onRemove={onRemove} gmail={gmail} logActivity={logActivity}/>
+        <ClientContactCard key={ct.id} ct={ct} isOpen={openContactId===ct.id} onToggle={()=>onToggle(ct.id)} onRemove={onRemove} onUpdate={onUpdate} onSetPrimary={onSetPrimary} gmail={gmail} logActivity={logActivity}/>
       ))}
     </div>
   );
 }
 
-function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
+function ClientCard({client,setClients,jobs,setJobs,last,gmail,logActivity,onNavigateToJob}){
   const [open,setOpen]=useState(false);const [tab,setTab]=useState("overview");
   const [editing,setEditing]=useState(false);const [draft,setDraft]=useState({...client});
   const [addingContact,setAddingContact]=useState(false);const [newContact,setNewContact]=useState({name:"",title:"",email:"",phone:""});
   const [addingNote,setAddingNote]=useState(false);const [newNote,setNewNote]=useState("");
+  const [addingJob,setAddingJob]=useState(false);
+  const [newJobDraft,setNewJobDraft]=useState({title:"",fee:"",deadline:"",clientContactId:null});
   const [editingNote,setEditingNote]=useState(null);const [noteText,setNoteText]=useState("");
   const [openContactId,setOpenContactId]=useState(null);
   // Mini-modal for Fees / Open roles drill-down
@@ -2434,6 +2768,8 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
   const save=()=>{setClients(p=>p.map(c=>c.id===client.id?draft:c));setEditing(false);};
   const addContact=()=>{if(!newContact.name)return;const updated={...client,contacts:[...(client.contacts||[]),{...newContact,id:Date.now(),primary:false}]};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);logActivity?.("newContact",`New contact added: ${newContact.name} at ${client.name}`,`${newContact.title} · ${newContact.email}`);setNewContact({name:"",title:"",email:"",phone:""});setAddingContact(false);};
   const removeContact=(cid)=>{const updated={...client,contacts:(client.contacts||[]).filter(c=>c.id!==cid)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
+  const updateContact=(ct)=>{const updated={...client,contacts:(client.contacts||[]).map(c=>c.id===ct.id?ct:c)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
+  const setPrimaryContact=(ctId)=>{const updated={...client,contacts:(client.contacts||[]).map(c=>({...c,primary:c.id===ctId}))};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
   const addNote=()=>{if(!newNote.trim())return;const nn={id:Date.now(),text:newNote.trim(),date:"Mar 27, 2025"};const updated={...client,notes:[nn,...client.notes]};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);setNewNote("");setAddingNote(false);};
   const saveNote=(nid)=>{const updated={...client,notes:(client.notes||[]).map(n=>n.id===nid?{...n,text:noteText}:n)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);setEditingNote(null);};
   const deleteNote=(nid)=>{const updated={...client,notes:(client.notes||[]).filter(n=>n.id!==nid)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
@@ -2495,7 +2831,7 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
         <Chevron open={open}/>
       </div>
       {open&&(
-        <div className="expand" style={{background:"#F8F8FA",borderTop:`0.5px solid ${T.sep}`}}>
+        <div className="expand" style={{background:T.bg,borderTop:`0.5px solid ${T.sep}`}}>
           <SubTabStrip tabs={TABS} active={tab} onChange={setTab}/>
           {tab==="overview"&&<div style={{padding:"14px 16px 4px"}}>{editing?(
             <>
@@ -2552,6 +2888,8 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
               openContactId={openContactId}
               onToggle={id=>setOpenContactId(p=>p===id?null:id)}
               onRemove={removeContact}
+              onUpdate={updateContact}
+              onSetPrimary={setPrimaryContact}
               gmail={gmail}
               logActivity={logActivity}
             />
@@ -2562,11 +2900,92 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
             </div>):(<div className="tap" onClick={()=>setAddingContact(true)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 0",marginBottom:10}}><div style={{width:32,height:32,borderRadius:16,background:"rgba(0,122,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center"}}><Icon name="plus" size={16} color={T.blue} strokeWidth={2.2}/></div><span style={{...sf(14,500,T.blue)}}>Add Contact</span></div>)}
           </div>}
           {tab==="jobs"&&<div style={{padding:"14px 16px 4px"}}>
-            {clientJobs.length===0&&<div style={{textAlign:"center",padding:"20px 0"}}><IconBadge name="briefcase" bg="rgba(0,122,255,0.08)" iconColor={T.blue} size={48}/><div style={{...sf(14,500,T.label3),marginTop:10}}>No linked jobs</div></div>}
-            {clientJobs.map(job=>(<div key={job.id} style={{background:T.card,borderRadius:10,padding:"12px 14px",marginBottom:10,border:`0.5px solid ${T.sep}`}}>
+            {/* Add Job button */}
+            {!addingJob?(
+              <div style={{display:"flex",gap:8,marginBottom:12}}>
+                <div className="tap" onClick={()=>setAddingJob("new")}
+                  style={{flex:1,display:"flex",alignItems:"center",gap:7,padding:"9px 12px",background:"rgba(0,122,255,0.08)",borderRadius:10,border:`0.5px solid rgba(0,122,255,0.2)`}}>
+                  <Icon name="plus" size={14} color={T.blue} strokeWidth={2.2}/>
+                  <span style={{...sf(13,500,T.blue)}}>Create New Job</span>
+                </div>
+                {jobs.filter(j=>!(client.linkedJobs||[]).includes(j.id)&&j.stage!=="Filled").length>0&&(
+                  <div className="tap" onClick={()=>setAddingJob("link")}
+                    style={{flex:1,display:"flex",alignItems:"center",gap:7,padding:"9px 12px",background:"rgba(88,86,214,0.08)",borderRadius:10,border:`0.5px solid rgba(88,86,214,0.2)`}}>
+                    <Icon name="link" size={14} color={T.indigo} strokeWidth={2.2}/>
+                    <span style={{...sf(13,500,T.indigo)}}>Link Existing Job</span>
+                  </div>
+                )}
+              </div>
+            ):(
+              <div style={{background:T.card,borderRadius:12,padding:"12px",marginBottom:12,border:`0.5px solid ${T.sep}`}}>
+                {addingJob==="link"?(
+                  <>
+                    <div style={{...sf(11,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Link Existing Job</div>
+                    {jobs.filter(j=>!(client.linkedJobs||[]).includes(j.id)&&j.stage!=="Filled").map(j=>(
+                      <div key={j.id} className="tap" onClick={()=>{
+                        // Link job to this client
+                        setClients(p=>p.map(cl=>cl.id===client.id?{...cl,linkedJobs:[...(cl.linkedJobs||[]),j.id]}:cl));
+                        setJobs(p=>p.map(jb=>jb.id===j.id?{...jb,clientId:client.id,company:client.name}:jb));
+                        setAddingJob(false);
+                      }}
+                        style={{display:"flex",alignItems:"center",gap:9,padding:"8px 4px",borderBottom:`0.5px solid ${T.sep}`}}>
+                        <IconBadge name="briefcase" bg="rgba(0,122,255,0.08)" iconColor={T.blue} size={28}/>
+                        <div style={{flex:1}}><div style={{...sf(13,600,T.label)}}>{j.title}</div><div style={{...sf(11,400,T.label3)}}>{j.company} · {j.stage}</div></div>
+                        <Icon name="plus" size={14} color={T.blue} strokeWidth={2.2}/>
+                      </div>
+                    ))}
+                    <div style={{marginTop:8}}><GhostBtn label="Cancel" color={T.gray} onPress={()=>setAddingJob(false)}/></div>
+                  </>
+                ):(
+                  /* addingJob === "new" — inline new job form */
+                  <>
+                    <div style={{...sf(11,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>New Job for {client.name}</div>
+                    {[{k:"title",ph:"Job Title (e.g. VP of Engineering)"},{k:"fee",ph:"Fee (e.g. $45,000)"},{k:"deadline",ph:"Deadline (e.g. May 30)"}].map((fi,i,a)=>(
+                      <div key={fi.k} style={{borderBottom:i<a.length-1?`0.5px solid ${T.sep}`:"none",padding:"8px 0"}}>
+                        <input value={newJobDraft[fi.k]||""} onChange={e=>setNewJobDraft(p=>({...p,[fi.k]:e.target.value}))}
+                          placeholder={fi.ph} style={{width:"100%",border:"none",outline:"none",...sf(14,400,T.label),background:"transparent"}}/>
+                      </div>
+                    ))}
+                    {/* Contact picker for this job */}
+                    <div style={{marginTop:10,marginBottom:8}}>
+                      <div style={{...sf(10,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:6}}>Hiring Contact</div>
+                      {(client.contacts||[]).map(ct=>(
+                        <div key={ct.id} className="tap" onClick={()=>setNewJobDraft(p=>({...p,clientContactId:ct.id}))}
+                          style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:8,marginBottom:4,background:newJobDraft.clientContactId===ct.id?"rgba(52,199,89,0.08)":T.gray5,border:`0.5px solid ${newJobDraft.clientContactId===ct.id?T.green:T.gray4}`}}>
+                          <Avatar initials={(ct.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)} size={24}/>
+                          <span style={{...sf(12,500,T.label),flex:1}}>{ct.name} · {ct.title}</span>
+                          {newJobDraft.clientContactId===ct.id&&<Icon name="check" size={13} color={T.green} strokeWidth={2.5}/>}
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{display:"flex",gap:7,marginTop:8}}>
+                      <GhostBtn label="Add Job" icon="check" color={T.blue} onPress={()=>{
+                        if(!newJobDraft.title) return;
+                        const newJ={id:Date.now(),title:newJobDraft.title,company:client.name,fee:newJobDraft.fee||"TBD",deadline:newJobDraft.deadline||"TBD",stage:"Active",candidates:0,urgent:false,deadlineDays:30,prospects:[],jobPitch:"",description:"",clientId:client.id,clientContactId:newJobDraft.clientContactId||null,notes:""};
+                        setJobs(p=>[...p,newJ]);
+                        setClients(p=>p.map(cl=>cl.id===client.id?{...cl,linkedJobs:[...(cl.linkedJobs||[]),newJ.id]}:cl));
+                        logActivity?.("newJob",`New job added: ${newJ.title} at ${client.name}`,`Fee: ${newJ.fee}`);
+                        setNewJobDraft({title:"",fee:"",deadline:"",clientContactId:null});
+                        setAddingJob(false);
+                      }}/>
+                      <GhostBtn label="Cancel" color={T.gray} onPress={()=>setAddingJob(false)}/>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {clientJobs.length===0&&!addingJob&&<div style={{textAlign:"center",padding:"16px 0"}}><IconBadge name="briefcase" bg="rgba(0,122,255,0.08)" iconColor={T.blue} size={48}/><div style={{...sf(14,500,T.label3),marginTop:10}}>No linked jobs yet</div></div>}
+            {clientJobs.map(job=>(<div key={job.id} className="tap" onClick={()=>onNavigateToJob?.(job.id)} style={{background:T.card,borderRadius:10,padding:"12px 14px",marginBottom:10,border:`0.5px solid ${T.sep}`,cursor:"pointer"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:7}}><span style={{...sf(14,600,T.label)}}>{job.title}</span>{job.urgent&&<Icon name="alert" size={14} color={T.red} strokeWidth={1.8}/>}</div><div style={{...sf(12,400,T.label3),marginTop:2}}>Due {job.deadline} · {job.candidates} candidates</div></div>
-                <div style={{textAlign:"right"}}><div style={{...sf(14,700,T.blue)}}>{job.fee}</div><div style={{marginTop:4}}><Pill label={job.stage} color={job.stage==="Active"?T.green:job.stage==="Filled"?T.gray:T.orange}/></div></div>
+                <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:7}}><span style={{...sf(14,600,T.label)}}>{job.title}</span>{job.urgent&&<Icon name="alert" size={14} color={T.red} strokeWidth={1.8}/>}</div>
+                {job.clientContactId&&(client.contacts||[]).find(c=>c.id===job.clientContactId)&&(
+                  <div style={{...sf(11,400,T.label3),marginTop:2}}>Contact: {(client.contacts||[]).find(c=>c.id===job.clientContactId)?.name}</div>
+                )}
+                <div style={{...sf(12,400,T.label3),marginTop:2}}>Due {job.deadline} · {job.candidates} candidates</div></div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{textAlign:"right"}}><div style={{...sf(14,700,T.blue)}}>{job.fee}</div><div style={{marginTop:4}}><Pill label={job.stage} color={job.stage==="Active"?T.green:job.stage==="Filled"?T.gray:T.orange}/></div></div>
+                  <Icon name="chevronRight" size={14} color={T.gray3} strokeWidth={2}/>
+                </div>
               </div>
               {job.notes&&<div style={{...sf(12,400,T.label3),marginTop:8,lineHeight:1.5}}>{job.notes}</div>}
             </div>))}
@@ -2607,7 +3026,7 @@ function TabBar({active,onChange}){
     {id:"jobs",     icon:"briefcase",label:"Jobs"},
   ];
   return(
-    <div style={{flexShrink:0,zIndex:200,background:"rgba(249,249,249,0.94)",backdropFilter:"blur(20px) saturate(180%)",WebkitBackdropFilter:"blur(20px) saturate(180%)",borderTop:`0.5px solid ${T.sep}`,display:"flex",padding:`8px 0 calc(env(safe-area-inset-bottom, 20px) + 4px)`}}>
+    <div style={{flexShrink:0,zIndex:200,background:T.card+"ee",backdropFilter:"blur(20px) saturate(180%)",WebkitBackdropFilter:"blur(20px) saturate(180%)",borderTop:`0.5px solid ${T.sep}`,display:"flex",padding:`8px 0 calc(env(safe-area-inset-bottom, 20px) + 4px)`}}>
       {tabs.map(t=>{const on=active===t.id;return(
         <div key={t.id} className="tap" onClick={()=>onChange(t.id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
           <Icon name={t.icon} size={22} color={on?T.blue:T.gray3} strokeWidth={on?2:1.6}/>
@@ -2646,9 +3065,9 @@ function useGreeting() {
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActivities,onNavigate,nbaActions,onDismissNBA,onOpenKpi,onOpenNBA,gmail,logActivity}){
+function Dashboard({contacts,setContacts,jobs,setJobs,clients,setClients,activities,setActivities,onNavigate,nbaActions,onDismissNBA,onOpenKpi,onOpenNBA,gmail,logActivity,dark,toggleTheme}){
   const { greeting, dateStr } = useGreeting();
-  const pipeVal=jobs.filter(j=>j.stage!=="Filled").reduce((s,j)=>s+parseInt(j.fee.replace(/\D/g,"")),0);
+  const pipeVal=jobs.filter(j=>j.stage!=="Filled").reduce((s,j)=>s+parseInt((j.fee||"0").replace(/\D/g,"")||0),0);
   const criticalCount=nbaActions.filter(a=>a.priority==="critical").length;
 
   const kpis=[
@@ -2666,12 +3085,21 @@ function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActi
             <div style={{...sf(12,500,T.label3),textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:4}}>{dateStr}</div>
             <div style={{...sf(28,700,T.label)}}>{greeting}</div>
           </div>
-          {/* NBA Button */}
-          <div className="tap" onClick={()=>onOpenNBA()} style={{position:"relative",marginTop:6}}>
-            <div style={{width:42,height:42,borderRadius:13,background:"linear-gradient(135deg,#007AFF 0%,#AF52DE 100%)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 2px 12px rgba(0,122,255,0.35)"}}>
-              <Icon name="sparkle" size={20} color="#fff" strokeWidth={2}/>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginTop:6}}>
+            {/* Minimal dark/light toggle */}
+            <div className="tap" onClick={toggleTheme}
+              style={{width:52,height:28,borderRadius:14,background:dark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)",position:"relative",flexShrink:0,border:`0.5px solid ${dark?"rgba(255,255,255,0.15)":"rgba(0,0,0,0.12)"}`}}>
+              <div style={{position:"absolute",top:3,left:dark?27:3,width:22,height:22,borderRadius:11,background:dark?"#FFFFFF":"#000000",transition:`left 0.22s ${T.spring}`,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 1px 4px rgba(0,0,0,0.25)"}}>
+                <span style={{fontSize:11,lineHeight:1}}>{dark?"☀️":"🌙"}</span>
+              </div>
             </div>
-            {criticalCount>0&&<div style={{position:"absolute",top:-4,right:-4,width:18,height:18,borderRadius:9,background:T.red,border:"2px solid #fff",display:"flex",alignItems:"center",justifyContent:"center",...sf(10,800,"#fff")}}>{criticalCount}</div>}
+            {/* NBA Button */}
+            <div className="tap" onClick={()=>onOpenNBA()} style={{position:"relative"}}>
+              <div style={{width:42,height:42,borderRadius:13,background:"linear-gradient(135deg,#007AFF 0%,#AF52DE 100%)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 2px 12px rgba(0,122,255,0.35)"}}>
+                <Icon name="sparkle" size={20} color="#fff" strokeWidth={2}/>
+              </div>
+              {criticalCount>0&&<div style={{position:"absolute",top:-4,right:-4,width:18,height:18,borderRadius:9,background:T.red,border:`2px solid ${T.card}`,display:"flex",alignItems:"center",justifyContent:"center",...sf(10,800,"#fff")}}>{criticalCount}</div>}
+            </div>
           </div>
         </div>
 
@@ -2719,7 +3147,7 @@ function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActi
       <div style={{height:1,background:T.sep}}/>
       <div style={{background:T.card}}>
         <SectionHead title="Urgent Roles" sub={`${jobs.filter(j=>j.urgent).length} need attention`} cta="See All" onCta={()=>onNavigate("jobs")}/>
-        <ListCard style={{margin:"0 16px 16px"}}>{jobs.filter(j=>j.urgent).map((j,i,a)=><ExpandableJobCard key={j.id} job={j} setJobs={setJobs} last={i===a.length-1} contacts={contacts} clients={clients} gmail={gmail} logActivity={logActivity}/>)}</ListCard>
+        <ListCard style={{margin:"0 16px 16px"}}>{jobs.filter(j=>j.urgent).map((j,i,a)=><ExpandableJobCard key={j.id} job={j} setJobs={setJobs} last={i===a.length-1} contacts={contacts} clients={clients} setClients={setClients} gmail={gmail} logActivity={logActivity}/>)}</ListCard>
       </div>
 
       <div style={{height:1,background:T.sep}}/>
@@ -2779,22 +3207,137 @@ function Pipeline({contacts,setContacts,jobs,setJobs,gmail,logActivity}){
 
 // ─── Contacts ─────────────────────────────────────────────────────────────────
 // ─── Resume Parser ───────────────────────────────────────────────────────────
-async function parseResumePDF(base64Data) {
+// ─── Resume Parser — supports PDF, DOCX, and Apple Pages ─────────────────────
+
+// Extract raw text from a DOCX file (which is a ZIP of XML files)
+async function extractDocxText(base64Data) {
+  // Decode base64 to ArrayBuffer
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+  // Read as ZIP — look for word/document.xml
+  // We use a simple ZIP parser since JSZip isn't available
+  // DOCX ZIP local file header: PK\x03\x04
+  const data = bytes;
+  const textParts = [];
+
+  let i = 0;
+  while (i < data.length - 4) {
+    // Local file header signature
+    if (data[i]===0x50 && data[i+1]===0x4B && data[i+2]===0x03 && data[i+3]===0x04) {
+      const compression = data[i+8] | (data[i+9]<<8);
+      const compressedSize = data[i+18] | (data[i+19]<<8) | (data[i+20]<<16) | (data[i+21]<<24);
+      const filenameLen = data[i+26] | (data[i+27]<<8);
+      const extraLen = data[i+28] | (data[i+29]<<8);
+      const filenameStart = i + 30;
+      const filename = String.fromCharCode(...data.slice(filenameStart, filenameStart + filenameLen));
+      const dataStart = filenameStart + filenameLen + extraLen;
+
+      // Only process uncompressed or deflated word/document.xml
+      if ((filename === 'word/document.xml' || filename === 'word/document2.xml') && compression === 0) {
+        const xmlBytes = data.slice(dataStart, dataStart + compressedSize);
+        const xmlStr = new TextDecoder('utf-8').decode(xmlBytes);
+        // Strip XML tags, extract text content
+        const text = xmlStr
+          .replace(/<w:p[ >]/g, '\n<w:p ')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&apos;/g,"'").replace(/&quot;/g,'"')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+        textParts.push(text);
+      }
+      i = dataStart + Math.max(0, compressedSize);
+    } else {
+      i++;
+    }
+  }
+  return textParts.join('\n\n') || null;
+}
+
+// Extract text from Apple Pages (also a ZIP — contains a PDF preview)
+async function extractPagesText(base64Data) {
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+  // Pages embeds a PDF preview at QuickLook/Preview.pdf — find it in the ZIP
+  let i = 0;
+  while (i < bytes.length - 4) {
+    if (bytes[i]===0x50 && bytes[i+1]===0x4B && bytes[i+2]===0x03 && bytes[i+3]===0x04) {
+      const compression = bytes[i+8] | (bytes[i+9]<<8);
+      const compressedSize = bytes[i+18] | (bytes[i+19]<<8) | (bytes[i+20]<<16) | (bytes[i+21]<<24);
+      const filenameLen = bytes[i+26] | (bytes[i+27]<<8);
+      const extraLen = bytes[i+28] | (bytes[i+29]<<8);
+      const filenameStart = i + 30;
+      const filename = String.fromCharCode(...bytes.slice(filenameStart, filenameStart + filenameLen));
+      const dataStart = filenameStart + filenameLen + extraLen;
+
+      if ((filename === 'QuickLook/Preview.pdf' || filename === 'QuickLook/Thumbnail.pdf') && compression === 0) {
+        // Found embedded PDF — convert to base64 and return
+        const pdfBytes = bytes.slice(dataStart, dataStart + compressedSize);
+        let binary64 = '';
+        for (let j = 0; j < pdfBytes.length; j++) binary64 += String.fromCharCode(pdfBytes[j]);
+        return { type: 'pdf', base64: btoa(binary64) };
+      }
+      i = dataStart + Math.max(0, compressedSize);
+    } else { i++; }
+  }
+  return null; // No PDF preview found
+}
+
+// Send to Claude API with appropriate format
+async function parseResumeWithClaude(contentBlock, textFallback) {
+  const PROMPT = `Parse this resume and return ONLY a JSON object with exactly these fields. No markdown, no backticks, no preamble — just raw JSON:\n{\n  "name": "Full Name",\n  "title": "Most recent job title",\n  "company": "Most recent employer",\n  "email": "email or empty string",\n  "phone": "phone or empty string",\n  "salary": "target salary if mentioned or empty string",\n  "tags": ["skill1","skill2","skill3"],\n  "stage": "Sourced",\n  "notes": "One punchy recruiter sentence about this candidate",\n  "resume": {\n    "summary": "2-3 sentence professional summary",\n    "experience": [{"role":"Title","company":"Company","period":"Start-End","notes":"Key achievement 1-2 sentences"}],\n    "education": "Degree, School, Year",\n    "linkedIn": "LinkedIn URL or empty string"\n  }\n}\nRules: extract ALL experience most recent first. Tags = top 5-8 skills. Leave salary empty if not on resume.`;
+
+  const content = contentBlock
+    ? [contentBlock, { type:"text", text:PROMPT }]
+    : [{ type:"text", text:`Here is the resume text extracted from the document:\n\n${textFallback}\n\n${PROMPT}` }];
+
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1500,
-      messages: [{ role: "user", content: [
-        { type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64Data } },
-        { type:"text", text:"Parse this resume and return ONLY a JSON object with exactly these fields. No markdown, no backticks, no preamble — just raw JSON:\n{\n  \"name\": \"Full Name\",\n  \"title\": \"Most recent job title\",\n  \"company\": \"Most recent employer\",\n  \"email\": \"email or empty string\",\n  \"phone\": \"phone or empty string\",\n  \"salary\": \"target salary if mentioned or empty string\",\n  \"tags\": [\"skill1\",\"skill2\",\"skill3\"],\n  \"stage\": \"Sourced\",\n  \"notes\": \"One punchy recruiter sentence about this candidate\",\n  \"resume\": {\n    \"summary\": \"2-3 sentence professional summary\",\n    \"experience\": [{\"role\":\"Title\",\"company\":\"Company\",\"period\":\"Start-End\",\"notes\":\"Key achievement 1-2 sentences\"}],\n    \"education\": \"Degree, School, Year\",\n    \"linkedIn\": \"LinkedIn URL or empty string\"\n  }\n}\nRules: extract ALL experience most recent first. Tags = top 5-8 skills. Leave salary empty if not on resume." }
-      ]}]
-    })
+    body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1500, messages:[{ role:"user", content }] })
   });
   const data = await response.json();
   const text = data.content?.map(b=>b.text||"").join("").trim()||"";
+  if (!text) throw new Error("Empty response from Claude");
   return JSON.parse(text.replace(/```json|```/g,"").trim());
+}
+
+// Main entry point — detects file type and routes accordingly
+async function parseResume(file) {
+  const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(file); });
+  const type = file.type;
+  const name = (file.name||"").toLowerCase();
+
+  // PDF — send directly to Claude document API
+  if (type === "application/pdf" || name.endsWith(".pdf")) {
+    return parseResumeWithClaude({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:base64 } }, null);
+  }
+
+  // DOCX — extract XML text, send as text block
+  if (type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || name.endsWith(".docx")) {
+    const text = await extractDocxText(base64);
+    if (!text) throw new Error("Could not extract text from DOCX file.");
+    return parseResumeWithClaude(null, text);
+  }
+
+  // Apple Pages — extract embedded PDF preview, send as document
+  if (name.endsWith(".pages") || type === "application/x-iwork-pages-sffpages" || type === "application/octet-stream") {
+    const pdfResult = await extractPagesText(base64);
+    if (pdfResult?.type === 'pdf') {
+      return parseResumeWithClaude({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:pdfResult.base64 } }, null);
+    }
+    throw new Error("Could not find PDF preview in Pages file. Please export as PDF from Pages and upload that instead.");
+  }
+
+  // Legacy DOC (old binary format — not supported)
+  if (name.endsWith(".doc")) {
+    throw new Error("Old .doc format is not supported. Please save as .docx or PDF and try again.");
+  }
+
+  throw new Error("Unsupported file type. Please upload a PDF, Word (.docx), or Apple Pages file.");
 }
 
 // ─── Resume Upload Screen ─────────────────────────────────────────────────────
@@ -2804,16 +3347,17 @@ function ResumeUploadScreen({ onBack, onSave, logActivity }) {
   const [errorMsg, setErrorMsg] = useState("");
   const fileRef = useRef(null);
 
+  const ACCEPTED = ".pdf,.docx,.pages,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
   const handleFile = async (file) => {
-    if (!file || file.type !== "application/pdf") { setErrorMsg("Please upload a PDF file."); setStage("error"); return; }
+    if (!file) return;
     setStage("parsing");
     try {
-      const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(file); });
-      const result = await parseResumePDF(base64);
+      const result = await parseResume(file);
       setDraft({ ...result, tags: Array.isArray(result.tags)?result.tags:[] });
       setStage("confirm");
     } catch(e) {
-      setErrorMsg("Could not read the resume. Make sure it's a text-based PDF (not a scanned image) and try again.");
+      setErrorMsg(e.message || "Could not read the resume. Try a different file format.");
       setStage("error");
     }
   };
@@ -2840,13 +3384,14 @@ function ResumeUploadScreen({ onBack, onSave, logActivity }) {
               <div style={{width:56,height:56,borderRadius:16,background:"rgba(0,122,255,0.10)",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 14px"}}>
                 <Icon name="upload" size={26} color={T.blue} strokeWidth={1.8}/>
               </div>
-              <div style={{...sf(16,600,T.label),marginBottom:6}}>Upload Resume PDF</div>
-              <div style={{...sf(13,400,T.label3),lineHeight:1.5,marginBottom:14}}>Tap to select a PDF. Claude reads it and auto-creates the profile and BD pitch.</div>
+              <div style={{...sf(16,600,T.label),marginBottom:6}}>Upload Resume</div>
+              <div style={{...sf(13,400,T.label3),lineHeight:1.5,marginBottom:14}}>Tap to select a file. Claude reads it and auto-creates the profile and BD pitch.</div>
+              <div style={{...sf(11,400,T.label3),marginBottom:14,lineHeight:1.4}}>Supports PDF · Word (.docx) · Apple Pages</div>
               <div style={{display:"inline-flex",alignItems:"center",gap:7,background:T.blue,borderRadius:20,padding:"9px 20px"}}>
-                <Icon name="upload" size={14} color="#fff" strokeWidth={2}/><span style={{...sf(14,600,"#fff")}}>Choose PDF</span>
+                <Icon name="upload" size={14} color="#fff" strokeWidth={2}/><span style={{...sf(14,600,"#fff")}}>Choose File</span>
               </div>
             </div>
-            <input ref={fileRef} type="file" accept="application/pdf" style={{display:"none"}} onChange={e=>e.target.files?.[0]&&handleFile(e.target.files[0])}/>
+            <input ref={fileRef} type="file" accept={ACCEPTED} style={{display:"none"}} onChange={e=>e.target.files?.[0]&&handleFile(e.target.files[0])}/>
             <div style={{background:T.card,borderRadius:12,padding:"14px 16px",border:`0.5px solid ${T.sep}`}}>
               <div style={{...sf(11,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>Auto-filled from resume</div>
               {[{icon:"person",label:"Name, title, current company"},{icon:"phone",label:"Phone and email"},{icon:"resume",label:"Full work history and education"},{icon:"star",label:"Skills and specialties"},{icon:"sparkle",label:"BD Pitch — generated automatically"}].map(r=>(
@@ -2855,6 +3400,7 @@ function ResumeUploadScreen({ onBack, onSave, logActivity }) {
                   <span style={{...sf(13,400,T.label2)}}>{r.label}</span>
                 </div>
               ))}
+              <div style={{...sf(11,400,T.label3),marginTop:10,lineHeight:1.5}}>📄 PDF &nbsp;·&nbsp; 📝 Word (.docx) &nbsp;·&nbsp;  Pages</div>
             </div>
           </>
         )}
@@ -2864,7 +3410,7 @@ function ResumeUploadScreen({ onBack, onSave, logActivity }) {
               <Icon name="sparkle" size={28} color="#fff" strokeWidth={2}/>
             </div>
             <div style={{...sf(18,700,T.label),marginBottom:8}}>Reading Resume…</div>
-            <div style={{...sf(13,400,T.label3),lineHeight:1.6}}>Claude is parsing the PDF. Takes about 10 seconds.</div>
+            <div style={{...sf(13,400,T.label3),lineHeight:1.6}}>Claude is extracting candidate details from the file. Takes about 10–15 seconds.</div>
           </div>
         )}
         {stage==="error"&&(
@@ -2978,7 +3524,7 @@ function AddContactForm({onBack,onSave}){
 }
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
-function Clients({clients,setClients,jobs,gmail,logActivity}){
+function Clients({clients,setClients,jobs,setJobs,gmail,logActivity,onNavigateToJob}){
   const [search,setSearch]=useState("");const [filterStatus,setFilterStatus]=useState("All");const [showAdd,setShowAdd]=useState(false);
   if(showAdd) return <AddClientForm onBack={()=>setShowAdd(false)} onSave={c=>{
     const newC={...c,id:Date.now(),totalFees:"$0",openRoles:0,contacts:[],linkedJobs:[],notes:[],logo:c.name.slice(0,2).toUpperCase(),logoColor:T.blue,lastOutreach:"Never",lastOutreachDays:999};
@@ -2997,7 +3543,7 @@ function Clients({clients,setClients,jobs,gmail,logActivity}){
         <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:2}}>{["All","Active","Pending","Closed"].map(s=>{const on=filterStatus===s;const m=CLIENT_STATUS[s];return(<div key={s} className="tap" onClick={()=>setFilterStatus(s)} style={{borderRadius:20,padding:"6px 14px",flexShrink:0,background:on?(m?m.color:T.blue):T.gray5,color:on?"#fff":T.gray,...sf(13,on?600:400,on?"#fff":T.gray),transition:`all 0.18s ${T.ease}`}}>{s}</div>);})}</div>
       </div>
       <div style={{height:1,background:T.sep}}/>
-      <ListCard style={{margin:"16px 16px 0"}}>{filtered.map((c,i)=><ClientCard key={c.id} client={c} setClients={setClients} jobs={jobs} last={i===filtered.length-1} gmail={gmail} logActivity={logActivity}/>)}{!filtered.length&&<div style={{padding:"36px 0",textAlign:"center",...sf(15,400,T.label3)}}>No clients found</div>}</ListCard>
+      <ListCard style={{margin:"16px 16px 0"}}>{filtered.map((c,i)=><ClientCard key={c.id} client={c} setClients={setClients} jobs={jobs} setJobs={setJobs} last={i===filtered.length-1} gmail={gmail} logActivity={logActivity} onNavigateToJob={onNavigateToJob}/>)}{!filtered.length&&<div style={{padding:"36px 0",textAlign:"center",...sf(15,400,T.label3)}}>No clients found</div>}</ListCard>
     </div>
   );
 }
@@ -3020,13 +3566,134 @@ function AddClientForm({onBack,onSave}){
 }
 
 // ─── Jobs ─────────────────────────────────────────────────────────────────────
-function Jobs({jobs,setJobs,contacts,clients,gmail,logActivity}){
+function AddJobForm({onBack,onSave,clients=[],preselectedClientId=null}){
+  const [f,setF]=useState({title:"",company:"",fee:"",deadline:"",stage:"Active",notes:"",description:""});
+  const [selectedClientId,setSelectedClientId]=useState(preselectedClientId||"");
+  const [selectedContactId,setSelectedContactId]=useState("");
+  const [showClientPicker,setShowClientPicker]=useState(false);
+  const [showContactPicker,setShowContactPicker]=useState(false);
+  const u=(k,v)=>setF(p=>({...p,[k]:v}));
+
+  const selectedClient = clients.find(c=>c.id===selectedClientId)||null;
+  const clientContacts = selectedClient?.contacts||[];
+  const selectedContact = clientContacts.find(c=>c.id===selectedContactId)||null;
+
+  const handleSelectClient=(cl)=>{
+    setSelectedClientId(cl.id);
+    setSelectedContactId(""); // reset contact when client changes
+    // Auto-fill company name
+    setF(p=>({...p,company:cl.name}));
+    setShowClientPicker(false);
+  };
+
+  const fields=[{k:"title",l:"Job Title",ph:"VP of Engineering"},{k:"fee",l:"Fee",ph:"$45,000"},{k:"deadline",l:"Deadline",ph:"Apr 30"}];
+
+  return(
+    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"52px 16px 16px",background:T.card,borderBottom:`0.5px solid ${T.sep}`}}>
+        <span className="tap" onClick={onBack} style={{...sf(16,400,T.blue),cursor:"pointer"}}>Cancel</span>
+        <span style={{...sf(16,600,T.label)}}>New Job</span>
+        <span className="tap" onClick={()=>f.title&&onSave(f,selectedClientId||null,selectedContactId||null)} style={{...sf(16,600,T.blue),cursor:"pointer"}}>Add</span>
+      </div>
+      <div style={{height:1,background:T.sep}}/>
+
+      {/* Client Selector */}
+      <div style={{margin:"16px 16px 0"}}>
+        <div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Client</div>
+        <div className="tap" onClick={()=>setShowClientPicker(o=>!o)}
+          style={{background:T.card,borderRadius:12,padding:"13px 16px",border:`0.5px solid ${selectedClient?T.blue:T.gray4}`,display:"flex",alignItems:"center",gap:10}}>
+          {selectedClient
+            ? <><LogoBadge letters={selectedClient.logo} color={selectedClient.logoColor} size={32}/><div style={{flex:1}}><div style={{...sf(14,600,T.label)}}>{selectedClient.name}</div><div style={{...sf(11,400,T.label3)}}>{selectedClient.industry}</div></div><Icon name="chevronRight" size={14} color={T.gray3} strokeWidth={2}/></>
+            : <><div style={{width:32,height:32,borderRadius:10,background:T.gray5,display:"flex",alignItems:"center",justifyContent:"center"}}><Icon name="building2" size={16} color={T.gray} strokeWidth={1.8}/></div><span style={{...sf(14,400,T.label3),flex:1}}>Select a client…</span><Icon name="chevronRight" size={14} color={T.gray3} strokeWidth={2}/></>
+          }
+        </div>
+
+        {/* Client picker dropdown */}
+        {showClientPicker&&(
+          <div style={{background:T.card,borderRadius:12,border:`0.5px solid ${T.sep}`,marginTop:6,overflow:"hidden",boxShadow:"0 4px 20px rgba(0,0,0,0.12)"}}>
+            <div className="tap" onClick={()=>{setSelectedClientId("");setSelectedContactId("");setF(p=>({...p,company:""}));setShowClientPicker(false);}}
+              style={{padding:"11px 16px",borderBottom:`0.5px solid ${T.sep}`,...sf(13,400,T.gray)}}>
+              No client (unlinked job)
+            </div>
+            {clients.map(cl=>(
+              <div key={cl.id} className="tap" onClick={()=>handleSelectClient(cl)}
+                style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",borderBottom:`0.5px solid ${T.sep}`,background:selectedClientId===cl.id?"rgba(0,122,255,0.05)":"transparent"}}>
+                <LogoBadge letters={cl.logo} color={cl.logoColor} size={32}/>
+                <div style={{flex:1}}>
+                  <div style={{...sf(14,600,T.label)}}>{cl.name}</div>
+                  <div style={{...sf(11,400,T.label3)}}>{cl.industry} · {cl.status}</div>
+                </div>
+                {selectedClientId===cl.id&&<Icon name="check" size={15} color={T.blue} strokeWidth={2.5}/>}
+              </div>
+            ))}
+            {clients.length===0&&<div style={{padding:"14px 16px",...sf(13,400,T.label3)}}>No clients yet. Add a client first.</div>}
+          </div>
+        )}
+      </div>
+
+      {/* Contact Selector — only shown when a client is selected */}
+      {selectedClient&&(
+        <div style={{margin:"12px 16px 0"}}>
+          <div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Hiring Contact</div>
+          <div className="tap" onClick={()=>setShowContactPicker(o=>!o)}
+            style={{background:T.card,borderRadius:12,padding:"13px 16px",border:`0.5px solid ${selectedContact?T.green:T.gray4}`,display:"flex",alignItems:"center",gap:10}}>
+            {selectedContact
+              ? <><Avatar initials={(selectedContact.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)} size={32}/><div style={{flex:1}}><div style={{...sf(14,600,T.label)}}>{selectedContact.name}</div><div style={{...sf(11,400,T.label3)}}>{selectedContact.title} · {selectedContact.email}</div></div><Icon name="chevronRight" size={14} color={T.gray3} strokeWidth={2}/></>
+              : <><div style={{width:32,height:32,borderRadius:16,background:T.gray5,display:"flex",alignItems:"center",justifyContent:"center"}}><Icon name="person" size={16} color={T.gray} strokeWidth={1.8}/></div><span style={{...sf(14,400,T.label3),flex:1}}>Select hiring contact…</span><Icon name="chevronRight" size={14} color={T.gray3} strokeWidth={2}/></>
+            }
+          </div>
+          {showContactPicker&&(
+            <div style={{background:T.card,borderRadius:12,border:`0.5px solid ${T.sep}`,marginTop:6,overflow:"hidden",boxShadow:"0 4px 20px rgba(0,0,0,0.12)"}}>
+              {clientContacts.map(ct=>(
+                <div key={ct.id} className="tap" onClick={()=>{setSelectedContactId(ct.id);setShowContactPicker(false);}}
+                  style={{display:"flex",alignItems:"center",gap:10,padding:"10px 16px",borderBottom:`0.5px solid ${T.sep}`,background:selectedContactId===ct.id?"rgba(52,199,89,0.05)":"transparent"}}>
+                  <Avatar initials={(ct.name||"?").split(" ").map(n=>n[0]).join("").slice(0,2)} size={32}/>
+                  <div style={{flex:1}}>
+                    <div style={{...sf(14,600,T.label)}}>{ct.name}</div>
+                    <div style={{...sf(11,400,T.label3)}}>{ct.title} · {ct.email}</div>
+                  </div>
+                  {selectedContactId===ct.id&&<Icon name="check" size={15} color={T.green} strokeWidth={2.5}/>}
+                </div>
+              ))}
+              {clientContacts.length===0&&<div style={{padding:"14px 16px",...sf(13,400,T.label3)}}>No contacts on this client yet.</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Job fields */}
+      <div style={{margin:"12px 16px 0"}}>
+        <ListCard>{fields.map((fi,i)=>(<div key={fi.k} style={{borderBottom:i<fields.length-1?`0.5px solid ${T.sep}`:"none"}}><div style={{display:"flex",alignItems:"center",padding:"11px 16px",gap:12}}><div style={{width:80,flexShrink:0,...sf(13,400,T.label3)}}>{fi.l}</div><input value={f[fi.k]} onChange={e=>u(fi.k,e.target.value)} placeholder={fi.ph} style={{flex:1,border:"none",outline:"none",...sf(15,400,T.label),background:"transparent"}}/></div></div>))}</ListCard>
+      </div>
+
+      {/* Company field (auto-filled, still editable) */}
+      <div style={{margin:"12px 16px 0"}}>
+        <ListCard><div style={{display:"flex",alignItems:"center",padding:"11px 16px",gap:12}}><div style={{width:80,flexShrink:0,...sf(13,400,T.label3)}}>Company</div><input value={f.company} onChange={e=>u("company",e.target.value)} placeholder="Acme Corp" style={{flex:1,border:"none",outline:"none",...sf(15,400,T.label),background:"transparent"}}/></div></ListCard>
+      </div>
+
+      {/* Status */}
+      <div style={{margin:"12px 16px 0"}}>
+        <ListCard style={{padding:"12px 16px"}}><div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Status</div><div style={{display:"flex",gap:8}}>{["Active","Pending"].map(s=>(<div key={s} className="tap" onClick={()=>u("stage",s)} style={{borderRadius:20,padding:"7px 16px",...sf(13,f.stage===s?600:400,f.stage===s?"#fff":T.gray),background:f.stage===s?T.blue:T.gray5,transition:"all 0.18s"}}>{s}</div>))}</div></ListCard>
+      </div>
+
+      {/* JD */}
+      <div style={{height:1,background:T.sep,margin:"12px 0 0"}}/>
+      <ListCard style={{margin:"0 16px",padding:"12px 16px"}}><div style={{display:"flex",alignItems:"center",gap:7,marginBottom:7}}><Icon name="description" size={15} color={T.label3} strokeWidth={1.7}/><div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em"}}>Job Description</div></div><textarea value={f.description} onChange={e=>u("description",e.target.value)} placeholder={"About the Role\n\nResponsibilities\n• \n\nRequirements\n• \n\nCompensation\n"} rows={10} style={{width:"100%",border:"none",outline:"none",...sf(14,400,T.label),background:"transparent",resize:"vertical",lineHeight:1.7,minHeight:140}}/></ListCard>
+    </div>
+  );
+}
+
+function Jobs({jobs,setJobs,contacts,clients,setClients,gmail,logActivity,focusedJobId,onClearFocus}){
   const [showAdd,setShowAdd]=useState(false);
-  const totalFees=jobs.filter(j=>j.stage!=="Filled").reduce((s,j)=>s+parseInt(j.fee.replace(/\D/g,"")),0);
+  const totalFees=jobs.filter(j=>j.stage!=="Filled").reduce((s,j)=>s+parseInt((j.fee||"0").replace(/\D/g,"")||0),0);
   const active=jobs.filter(j=>j.stage==="Active"),pending=jobs.filter(j=>j.stage==="Pending"),filled=jobs.filter(j=>j.stage==="Filled");
-  if(showAdd) return <AddJobForm onBack={()=>setShowAdd(false)} onSave={j=>{
-    const newJ={...j,id:Date.now(),candidates:0,urgent:false,deadlineDays:30,prospects:[]};
+  if(showAdd) return <AddJobForm clients={clients||[]} onBack={()=>setShowAdd(false)} onSave={(j,clientId,clientContactId)=>{
+    const newJ={...j,id:Date.now(),candidates:0,urgent:false,deadlineDays:30,prospects:[],clientId:clientId||null,clientContactId:clientContactId||null};
     setJobs(p=>[...p,newJ]);
+    // Link job to client bidirectionally
+    if(clientId){
+      setClients(p=>p.map(cl=>cl.id===clientId?{...cl,linkedJobs:[...(cl.linkedJobs||[]),newJ.id]}:cl));
+    }
     logActivity?.("newJob",`New job added: ${j.title} at ${j.company}`,`Fee: ${j.fee} · Stage: ${j.stage}`);
     setShowAdd(false);
   }}/>;;
@@ -3036,31 +3703,17 @@ function Jobs({jobs,setJobs,contacts,clients,gmail,logActivity}){
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div style={{...sf(28,700,T.label)}}>Jobs</div><div className="tap" onClick={()=>setShowAdd(true)} style={{background:T.blue,borderRadius:20,padding:"7px 14px",display:"flex",alignItems:"center",gap:6,...sf(14,600,"#fff"),cursor:"pointer"}}><Icon name="plus" size={14} color="#fff" strokeWidth={2.5}/>New Job</div></div>
         <div style={{display:"flex",gap:20,marginTop:12}}>{[{v:`$${(totalFees/1000).toFixed(0)}k`,l:"Pipeline",c:T.green},{v:active.length,l:"Active",c:T.blue},{v:filled.length,l:"Filled",c:T.gray}].map(s=>(<div key={s.l}><div style={{...sf(22,700,s.c)}}>{s.v}</div><div style={{...sf(11,400,T.label3)}}>{s.l}</div></div>))}</div>
       </div>
-      {[[active,"Active"],[pending,"Pending"],[filled,"Filled"]].map(([arr,label])=>arr.length===0?null:(<div key={label}><div style={{height:1,background:T.sep}}/><div style={{background:T.card}}><SectionHead title={label} sub={`${arr.length} role${arr.length!==1?"s":""}`}/><ListCard style={{margin:"0 16px 16px"}}>{arr.map((j,i)=><ExpandableJobCard key={j.id} job={j} setJobs={setJobs} last={i===arr.length-1} contacts={contacts} clients={clients} gmail={gmail} logActivity={logActivity}/>)}</ListCard></div></div>))}
+      {[[active,"Active"],[pending,"Pending"],[filled,"Filled"]].map(([arr,label])=>arr.length===0?null:(<div key={label}><div style={{height:1,background:T.sep}}/><div style={{background:T.card}}><SectionHead title={label} sub={`${arr.length} role${arr.length!==1?"s":""}`}/><ListCard style={{margin:"0 16px 16px"}}>{arr.map((j,i)=><ExpandableJobCard key={j.id} job={j} setJobs={setJobs} last={i===arr.length-1} contacts={contacts} clients={clients} setClients={setClients} gmail={gmail} logActivity={logActivity} focusedJobId={focusedJobId} onClearFocus={onClearFocus}/>)}</ListCard></div></div>))}
     </div>
   );
 }
 
-function AddJobForm({onBack,onSave}){
-  const [f,setF]=useState({title:"",company:"",fee:"",deadline:"",stage:"Active",notes:"",description:""});
-  const u=(k,v)=>setF(p=>({...p,[k]:v}));
-  const fields=[{k:"title",l:"Job Title",ph:"VP of Engineering"},{k:"company",l:"Company",ph:"Acme Corp"},{k:"fee",l:"Fee",ph:"$45,000"},{k:"deadline",l:"Deadline",ph:"Apr 30"}];
-  return(
-    <div style={{overflowY:"auto",paddingBottom:"calc(env(safe-area-inset-bottom, 20px) + 90px)"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"52px 16px 16px",background:T.card,borderBottom:`0.5px solid ${T.sep}`}}><span className="tap" onClick={onBack} style={{...sf(16,400,T.blue),cursor:"pointer"}}>Cancel</span><span style={{...sf(16,600,T.label)}}>New Job</span><span className="tap" onClick={()=>f.title&&onSave(f)} style={{...sf(16,600,T.blue),cursor:"pointer"}}>Add</span></div>
-      <div style={{height:1,background:T.sep}}/>
-      <ListCard style={{margin:"0 16px"}}>{fields.map((fi,i)=>(<div key={fi.k} style={{borderBottom:i<fields.length-1?`0.5px solid ${T.sep}`:"none"}}><div style={{display:"flex",alignItems:"center",padding:"11px 16px",gap:12}}><div style={{width:72,flexShrink:0,...sf(13,400,T.label3)}}>{fi.l}</div><input value={f[fi.k]} onChange={e=>u(fi.k,e.target.value)} placeholder={fi.ph} style={{flex:1,border:"none",outline:"none",...sf(15,400,T.label),background:"transparent"}}/></div></div>))}</ListCard>
-      <div style={{height:1,background:T.sep}}/>
-      <ListCard style={{margin:"0 16px",padding:"12px 16px"}}><div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Status</div><div style={{display:"flex",gap:8}}>{["Active","Pending"].map(s=>(<div key={s} className="tap" onClick={()=>u("stage",s)} style={{borderRadius:20,padding:"7px 16px",...sf(13,f.stage===s?600:400,f.stage===s?"#fff":T.gray),background:f.stage===s?T.blue:T.gray5,transition:"all 0.18s"}}>{s}</div>))}</div></ListCard>
-      <div style={{height:1,background:T.sep}}/>
-      <ListCard style={{margin:"0 16px",padding:"12px 16px"}}><div style={{display:"flex",alignItems:"center",gap:7,marginBottom:7}}><Icon name="description" size={15} color={T.label3} strokeWidth={1.7}/><div style={{...sf(11,600,T.label3),textTransform:"uppercase",letterSpacing:"0.07em"}}>Job Description</div></div><textarea value={f.description} onChange={e=>u("description",e.target.value)} placeholder={"About the Role\n\nResponsibilities\n• \n\nRequirements\n• \n\nCompensation\n"} rows={10} style={{width:"100%",border:"none",outline:"none",...sf(14,400,T.label),background:"transparent",resize:"vertical",lineHeight:1.7,minHeight:140}}/></ListCard>
-    </div>
-  );
-}
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App(){
   const [tab,setTab]=useState("dashboard");
+  const [focusedJobId,setFocusedJobId]=useState(null);
+  const { dark, toggle: toggleTheme } = useTheme();
 
   // All data backed by Supabase
   const [contacts,setContacts,contactsSynced] = useSupabaseTable("contacts", seedContacts);
@@ -3071,7 +3724,7 @@ export default function App(){
   const [dismissedNBA,setDismissedNBA]=useState([]);
   const [kpiModal,setKpiModal]=useState(null);
   const [showNBA,setShowNBA]=useState(false);
-
+  
   const isLoading = !contactsSynced || !jobsSynced || !clientsSynced || !actSynced;
 
   // logActivity ref — lets useGmail log received emails without circular dep
@@ -3093,7 +3746,7 @@ export default function App(){
 
   return(
     <>
-      <GS/>
+      <GS dark={dark}/>
       {/* Full-screen — no fake phone frame */}
       <div style={{position:"fixed",inset:0,background:T.bg,display:"flex",flexDirection:"column",overflow:"hidden"}}>
 
@@ -3107,18 +3760,19 @@ export default function App(){
               {tab==="dashboard"&&<Dashboard
                 contacts={contacts} setContacts={setContacts}
                 jobs={jobs} setJobs={setJobs}
-                clients={clients}
+                clients={clients} setClients={setClients}
                 activities={activities} setActivities={setActivities}
                 onNavigate={setTab}
                 nbaActions={nbaActions} onDismissNBA={dismissNBA}
                 onOpenKpi={setKpiModal} onOpenNBA={()=>setShowNBA(true)}
                 gmail={gmail}
                 logActivity={logActivity}
+                dark={dark} toggleTheme={toggleTheme}
               />}
               {tab==="pipeline" &&<Pipeline  contacts={contacts} setContacts={setContacts} jobs={jobs} setJobs={setJobs} gmail={gmail} logActivity={logActivity}/>}
-              {tab==="clients"  &&<Clients   clients={clients} setClients={setClients} jobs={jobs} gmail={gmail} logActivity={logActivity}/>}
+              {tab==="clients"  &&<Clients   clients={clients} setClients={setClients} jobs={jobs} setJobs={setJobs} gmail={gmail} logActivity={logActivity} onNavigateToJob={jobId=>{setFocusedJobId(jobId);setTab("jobs");}}/>}
               {tab==="contacts" &&<Contacts  contacts={contacts} setContacts={setContacts} jobs={jobs} setJobs={setJobs} gmail={gmail} logActivity={logActivity}/>}
-              {tab==="jobs"     &&<Jobs      jobs={jobs} setJobs={setJobs} contacts={contacts} clients={clients} gmail={gmail} logActivity={logActivity}/>}
+              {tab==="jobs"     &&<Jobs      jobs={jobs} setJobs={setJobs} contacts={contacts} clients={clients} setClients={setClients} gmail={gmail} logActivity={logActivity} focusedJobId={focusedJobId} onClearFocus={()=>setFocusedJobId(null)}/>}
             </div>
 
             {/* Modals — position fixed so they cover full screen on real device */}
