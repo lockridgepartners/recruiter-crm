@@ -378,7 +378,7 @@ function useGmail(contacts, clients, setContacts, setClients, logActivityRef) {
         setClients(prev => {
           if (!prev) return prev;
           return prev.map(cl => {
-            const updatedContacts = cl.contacts.map(ct => {
+            const updatedContacts = (cl.contacts||[]).map(ct => {
               const key = `client:${cl.id}:${ct.id}`;
               if (!newActivitiesByContact.has(key)) return ct;
               const { emails } = newActivitiesByContact.get(key);
@@ -908,13 +908,13 @@ function useIntelligence(contacts,jobs,clients){
       if(client.lastOutreachDays>=5&&client.status==="Active"){
         actions.push({id:id(),priority:"medium",type:"client",person:client.name,icon:"building2",iconBg:"rgba(88,86,214,0.10)",iconColor:T.indigo,
           title:`Check in with ${client.name}`,subtitle:`${client.industry} · Last outreach ${client.lastOutreach} ago`,
-          action:`It's been ${client.lastOutreach} since you last touched ${client.name}. Send a brief pipeline update to ${client.primaryContact.name} (${client.primaryContact.title}). Share any new relevant candidate profiles and reaffirm your commitment to filling their ${client.openRoles} open role${client.openRoles!==1?"s":""}. Keep the relationship warm.`,
+          action:`It's been ${client.lastOutreach} since you last touched ${client.name}. Send a brief pipeline update to ${client.primaryContact?.name||"primary contact"} (${client.primaryContact?.title||""}). Share any new relevant candidate profiles and reaffirm your commitment to filling their ${client.openRoles} open role${client.openRoles!==1?"s":""}. Keep the relationship warm.`,
           tags:["Check-in","Relationship"],color:T.indigo});
       }
       if(client.status==="Pending"&&client.lastOutreachDays>=3){
         actions.push({id:id(),priority:"high",type:"client",person:client.name,icon:"alert",iconBg:"rgba(255,149,0,0.12)",iconColor:T.orange,
           title:`Follow up: ${client.name} retainer`,subtitle:`Pending signature · ${client.lastOutreach} since contact`,
-          action:`${client.name} has a pending engagement for ${client.openRoles} role${client.openRoles!==1?"s":""}. Contact ${client.primaryContact.name} to check on retainer status. Consider offering a brief call to discuss any blockers — closed-lost deals often die here.`,
+          action:`${client.name} has a pending engagement for ${client.openRoles} role${client.openRoles!==1?"s":""}. Contact ${client.primaryContact?.name||"the primary contact"} to check on retainer status. Consider offering a brief call to discuss any blockers — closed-lost deals often die here.`,
           tags:["Pending","Follow-up"],color:T.orange});
       }
     });
@@ -1013,7 +1013,7 @@ function KpiItem({item,kpiColor,isOpen,onToggle}){
             {/* Tags */}
             {item.tags&&item.tags.length>0&&(
               <div style={{display:"flex",gap:5,flexWrap:"wrap",paddingTop:2}}>
-                {item.tags.map(t=><Pill key={t} label={t} color={kpiColor}/>)}
+                {(item.tags||[]).map(t=><Pill key={t} label={t} color={kpiColor}/>)}
               </div>
             )}
             {/* Status pill */}
@@ -1056,7 +1056,7 @@ function KpiModal({kpi,contacts,jobs,clients,onClose}){
         {icon:"industry",value:c.industry,color:T.label3},
         {icon:"globe",value:c.website,color:T.blue},
         {icon:"people",value:`${c.employees} employees`,color:T.label3},
-        {icon:"phone",value:c.primaryContact.name+" · "+c.primaryContact.title,color:T.label3},
+        {icon:"phone",value:(c.primaryContact?.name||"")+" · "+(c.primaryContact?.title||""),color:T.label3},
       ],
     }));
     if(kpi.key==="hot") return contacts.filter(c=>c.hot).map(c=>({
@@ -1170,7 +1170,7 @@ function NBAActionCard({action,isOpen,onToggle,onDismiss}){
               <div style={{...sf(13,400,T.label2),lineHeight:1.65}}>{action.action}</div>
             </div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:12,alignItems:"center"}}>
-              {action.tags.map(tag=><Pill key={tag} label={tag} color={T.gray}/>)}
+              {(action.tags||[]).map(tag=><Pill key={tag} label={tag} color={T.gray}/>)}
               <button onClick={e=>{e.stopPropagation();onDismiss(action.id);}} className="tap"
                 style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5,border:"none",background:`${T.green}14`,borderRadius:8,padding:"6px 11px",color:T.green,...sf(12,600),cursor:"pointer"}}>
                 <Icon name="check" size={12} color={T.green} strokeWidth={2.2}/>Done
@@ -1957,7 +1957,7 @@ function ExpandableContactCard({contact,setContacts,last,gmail,logActivity,jobs,
                         </div>
                   ))}
                   <div style={{...sf(13,400,T.label2),lineHeight:1.6,marginTop:10,marginBottom:8}}>{contact.notes}</div>
-                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{contact.tags.map(t=><Pill key={t} label={t} color={T.blue}/>)}</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{(contact.tags||[]).map(t=><Pill key={t} label={t} color={T.blue}/>)}</div>
                   {/* Gmail email thread */}
                   {gmail?.gmailUser&&(
                     <div style={{marginTop:4}}>
@@ -1968,7 +1968,7 @@ function ExpandableContactCard({contact,setContacts,last,gmail,logActivity,jobs,
                         <span style={{...sf(11,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em"}}>Gmail Emails</span>
                         {gmail.lastSync&&<span style={{...sf(10,400,T.label3),marginLeft:"auto"}}>Updated {gmail.lastSync.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>}
                       </div>
-                      <GmailThreadView emails={contact.gmailEmails} contactName={contact.name}/>
+                      <GmailThreadView emails={contact.gmailEmails||[]} contactName={contact.name}/>
                     </div>
                   )}
                 </div>
@@ -2432,13 +2432,13 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
   const [miniModal,setMiniModal]=useState(null); // null | { type:"fees"|"open", items:[], title, icon, color }
 
   const save=()=>{setClients(p=>p.map(c=>c.id===client.id?draft:c));setEditing(false);};
-  const addContact=()=>{if(!newContact.name)return;const updated={...client,contacts:[...client.contacts,{...newContact,id:Date.now(),primary:false}]};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);logActivity?.("newContact",`New contact added: ${newContact.name} at ${client.name}`,`${newContact.title} · ${newContact.email}`);setNewContact({name:"",title:"",email:"",phone:""});setAddingContact(false);};
-  const removeContact=(cid)=>{const updated={...client,contacts:client.contacts.filter(c=>c.id!==cid)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
+  const addContact=()=>{if(!newContact.name)return;const updated={...client,contacts:[...(client.contacts||[]),{...newContact,id:Date.now(),primary:false}]};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);logActivity?.("newContact",`New contact added: ${newContact.name} at ${client.name}`,`${newContact.title} · ${newContact.email}`);setNewContact({name:"",title:"",email:"",phone:""});setAddingContact(false);};
+  const removeContact=(cid)=>{const updated={...client,contacts:(client.contacts||[]).filter(c=>c.id!==cid)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
   const addNote=()=>{if(!newNote.trim())return;const nn={id:Date.now(),text:newNote.trim(),date:"Mar 27, 2025"};const updated={...client,notes:[nn,...client.notes]};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);setNewNote("");setAddingNote(false);};
-  const saveNote=(nid)=>{const updated={...client,notes:client.notes.map(n=>n.id===nid?{...n,text:noteText}:n)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);setEditingNote(null);};
-  const deleteNote=(nid)=>{const updated={...client,notes:client.notes.filter(n=>n.id!==nid)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
+  const saveNote=(nid)=>{const updated={...client,notes:(client.notes||[]).map(n=>n.id===nid?{...n,text:noteText}:n)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);setEditingNote(null);};
+  const deleteNote=(nid)=>{const updated={...client,notes:(client.notes||[]).filter(n=>n.id!==nid)};setClients(p=>p.map(c=>c.id===client.id?updated:c));setDraft(updated);};
 
-  const clientJobs=jobs.filter(j=>client.linkedJobs.includes(j.id));
+  const clientJobs=jobs.filter(j=>(client.linkedJobs||[]).includes(j.id));
   const openJobs=clientJobs.filter(j=>j.stage!=="Filled");
   const filledJobs=clientJobs.filter(j=>j.stage==="Filled");
 
@@ -2486,7 +2486,7 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
         <LogoBadge letters={client.logo} color={client.logoColor} size={44}/>
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{...sf(15,600,T.label)}}>{client.name}</span><StatusPill status={client.status} small/></div>
-          <div style={{...sf(13,400,T.label3),marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{client.industry} · {client.primaryContact.name}</div>
+          <div style={{...sf(13,400,T.label3),marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{client.industry}{client.primaryContact?.name ? " · "+client.primaryContact.name : ""}</div>
         </div>
         <div style={{textAlign:"right",flexShrink:0,marginRight:6}}>
           <div style={{...sf(14,700,T.blue)}}>{client.totalFees==="$0"?"—":client.totalFees}</div>
@@ -2548,7 +2548,7 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
           </div>}
           {tab==="contacts"&&<div style={{padding:"14px 16px 4px"}}>
             <ClientContactsList
-              contacts={client.contacts}
+              contacts={client.contacts||[]}
               openContactId={openContactId}
               onToggle={id=>setOpenContactId(p=>p===id?null:id)}
               onRemove={removeContact}
@@ -2577,7 +2577,7 @@ function ClientCard({client,setClients,jobs,last,gmail,logActivity}){
               <textarea value={newNote} onChange={e=>setNewNote(e.target.value)} autoFocus placeholder="Add a note…" rows={3} style={{width:"100%",border:"none",outline:"none",...sf(14,400,T.label),background:"transparent",resize:"none",lineHeight:1.6}}/>
               <div style={{display:"flex",gap:7,marginTop:10}}><GhostBtn label="Save Note" icon="check" color={T.blue} onPress={addNote}/><GhostBtn label="Cancel" color={T.gray} onPress={()=>setAddingNote(false)}/></div>
             </div>):(<div className="tap" onClick={()=>setAddingNote(true)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 0",marginBottom:10}}><div style={{width:32,height:32,borderRadius:16,background:"rgba(0,122,255,0.1)",display:"flex",alignItems:"center",justifyContent:"center"}}><Icon name="plus" size={16} color={T.blue} strokeWidth={2.2}/></div><span style={{...sf(14,500,T.blue)}}>Add Note</span></div>)}
-            {client.notes.map(n=>(<div key={n.id} style={{background:T.card,borderRadius:10,padding:"12px",marginBottom:10,border:`0.5px solid ${T.sep}`}}>
+            {(client.notes||[]).map(n=>(<div key={n.id} style={{background:T.card,borderRadius:10,padding:"12px",marginBottom:10,border:`0.5px solid ${T.sep}`}}>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:7}}><Icon name="note" size={13} color={T.label3} strokeWidth={1.7}/><span style={{...sf(11,400,T.label3)}}>{n.date}</span></div><div style={{display:"flex",gap:10}}><div className="tap" onClick={()=>{setEditingNote(n.id);setNoteText(n.text);}}><Icon name="edit" size={14} color={T.blue} strokeWidth={1.8}/></div><div className="tap" onClick={()=>deleteNote(n.id)}><Icon name="trash" size={14} color={T.gray3} strokeWidth={1.8}/></div></div></div>
               {editingNote===n.id?(<><textarea value={noteText} onChange={e=>setNoteText(e.target.value)} autoFocus rows={3} style={{width:"100%",border:"none",outline:"none",...sf(13,400,T.label),background:"transparent",resize:"none",lineHeight:1.6}}/><div style={{display:"flex",gap:7,marginTop:8}}><GhostBtn label="Save" icon="check" color={T.blue} onPress={()=>saveNote(n.id)}/><GhostBtn label="Cancel" color={T.gray} onPress={()=>setEditingNote(null)}/></div></>)
               :<div style={{...sf(13,400,T.label2),lineHeight:1.65}}>{n.text}</div>}
@@ -2646,7 +2646,7 @@ function useGreeting() {
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActivities,onNavigate,nbaActions,onDismissNBA,onOpenKpi,onOpenNBA,gmail}){
+function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActivities,onNavigate,nbaActions,onDismissNBA,onOpenKpi,onOpenNBA,gmail,logActivity}){
   const { greeting, dateStr } = useGreeting();
   const pipeVal=jobs.filter(j=>j.stage!=="Filled").reduce((s,j)=>s+parseInt(j.fee.replace(/\D/g,"")),0);
   const criticalCount=nbaActions.filter(a=>a.priority==="critical").length;
