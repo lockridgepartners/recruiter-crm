@@ -144,15 +144,15 @@ function useActivityLogger(setActivities, activities, gmail) {
 // Loads data from Supabase on mount, falls back to seed data on first run,
 // and syncs every change back automatically.
 // ─── Data Sanitizers — ensure all records have required fields ────────────────
-// Needed when Supabase returns old records missing new fields added after initial seed
+// Applied when Supabase returns old records missing fields added after initial seed
 const sanitizers = {
-  contacts: (c) => ({ bdPitch:"", gmailEmails:[], ...c }),
-  jobs:     (j) => ({ jobPitch:"", prospects:[], ...j }),
-  clients:  (cl) => ({
+  contacts:   (c)  => ({ bdPitch:"", gmailEmails:[], ...c }),
+  jobs:       (j)  => ({ jobPitch:"", prospects:[], ...j }),
+  clients:    (cl) => ({
     ...cl,
     contacts: (cl.contacts||[]).map(ct => ({ gmailEmails:[], activities:[], ...ct })),
   }),
-  activities: (a) => a,
+  activities: (a)  => a,
 };
 
 function useSupabaseTable(table, seedData) {
@@ -1414,9 +1414,11 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,gmail,logActivity}
     rejected:  {label:"Rejected",  color:T.red},
   };
 
+  const prospectsLabel = prospectCount > 0 ? `Prospects (${prospectCount})` : "Prospects";
+
   const TABS=[
     {id:"details",    label:"Details",   icon:"note"},
-    {id:"prospects",  label:`Prospects${prospectCount>0?" ("+prospectCount+")":""}`, icon:"people"},
+    {id:"prospects",  label:prospectsLabel,           icon:"people"},
     {id:"description",label:"JD",        icon:"description"},
     {id:"pitch",      label:"Pitch",     icon:"send"},
   ];
