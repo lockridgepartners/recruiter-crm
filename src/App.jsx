@@ -143,6 +143,18 @@ function useActivityLogger(setActivities, activities, gmail) {
 }
 // Loads data from Supabase on mount, falls back to seed data on first run,
 // and syncs every change back automatically.
+// ─── Data Sanitizers — ensure all records have required fields ────────────────
+// Needed when Supabase returns old records missing new fields added after initial seed
+const sanitizers = {
+  contacts: (c) => ({ bdPitch:"", gmailEmails:[], ...c }),
+  jobs:     (j) => ({ jobPitch:"", prospects:[], ...j }),
+  clients:  (cl) => ({
+    ...cl,
+    contacts: (cl.contacts||[]).map(ct => ({ gmailEmails:[], activities:[], ...ct })),
+  }),
+  activities: (a) => a,
+};
+
 function useSupabaseTable(table, seedData) {
   const [rows, setRows] = useState(null); // null = loading
   const [synced, setSynced] = useState(false);
@@ -151,18 +163,18 @@ function useSupabaseTable(table, seedData) {
   // Load on mount
   useEffect(() => {
     sb.select(table).then(data => {
+      const sanitize = sanitizers[table] || (x=>x);
       if (data && data.length > 0) {
-        // Supabase has data — use it
-        setRows(data.map(r => r.data));
+        setRows(data.map(r => sanitize(r.data)));
       } else {
-        // First run — seed Supabase with demo data
         setRows(seedData);
         seedData.forEach(row => sb.upsert(table, { id: row.id, data: row }));
       }
       setSynced(true);
     }).catch(() => {
       // Offline fallback
-      setRows(seedData);
+      const sanitize = sanitizers[table] || (x=>x);
+      setRows(seedData.map(sanitize));
       setSynced(true);
     });
   }, [table]);
