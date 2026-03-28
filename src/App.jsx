@@ -64,6 +64,14 @@ const ACTIVITY_TYPES = {
 };
 
 function useActivityLogger(setActivities, activities, gmail) {
+  // Use a ref for activities so the digest can read current value
+  // without needing to be in the dependency array (which would cause infinite loop)
+  const activitiesRef = useRef(activities);
+  useEffect(() => { activitiesRef.current = activities; }, [activities]);
+
+  const gmailRef = useRef(gmail);
+  useEffect(() => { gmailRef.current = gmail; }, [gmail]);
+
   const logActivity = useCallback((type, text, detail="") => {
     const t = ACTIVITY_TYPES[type] || ACTIVITY_TYPES.newCandidate;
     const entry = makeActivityEntry(t.iconName, t.iconBg, t.iconColor, text, detail);
@@ -71,44 +79,18 @@ function useActivityLogger(setActivities, activities, gmail) {
     return entry;
   }, [setActivities]);
 
-  // ── 5pm CST Daily Digest ──
+  // ── 5pm CST Daily Digest — runs once on mount ──
   useEffect(() => {
-    const scheduleDailyDigest = () => {
-      const now = new Date();
-      // CST = UTC-6, CDT = UTC-5. Use UTC-6 offset for consistent scheduling
-      const cstOffset = -6 * 60;
-      const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-      const cstNow = new Date(utcMs + cstOffset * 60000);
-
-      const target = new Date(cstNow);
-      target.setHours(17, 0, 0, 0); // 5:00:00 PM CST
-      if (cstNow >= target) target.setDate(target.getDate() + 1); // already past 5pm, schedule tomorrow
-
-      const msUntil = target - cstNow;
-
-      const timer = setTimeout(async () => {
-        await sendDailyDigest();
-        scheduleDailyDigest(); // reschedule for tomorrow
-      }, msUntil);
-
-      return () => clearTimeout(timer);
-    };
-
+    // sendDailyDigest defined first so scheduleDailyDigest can call it
     const sendDailyDigest = async () => {
-      if (!gmail?.gmailUser || !gmail?.sendEmail) return;
+      const g = gmailRef.current;
+      if (!g?.gmailUser || !g?.sendEmail) return;
 
       const today = new Date().toLocaleDateString("en-US", {weekday:"long", month:"long", day:"numeric", year:"numeric"});
       const todayStr = new Date().toISOString().slice(0,10);
+      const todayActivities = (activitiesRef.current||[]).filter(a => a.timestamp?.slice(0,10) === todayStr);
+      if (todayActivities.length === 0) return;
 
-      // Filter today's activities
-      const todayActivities = (activities||[]).filter(a => {
-        if (!a.timestamp) return false;
-        return a.timestamp.slice(0,10) === todayStr;
-      });
-
-      if (todayActivities.length === 0) return; // nothing to report
-
-      // Group by type
       const groups = {
         "New Candidates Added": todayActivities.filter(a=>a.iconName==="person"),
         "New Jobs Added":       todayActivities.filter(a=>a.iconName==="briefcase"),
@@ -120,36 +102,42 @@ function useActivityLogger(setActivities, activities, gmail) {
         "Other Activity":       todayActivities.filter(a=>!["person","briefcase","building","send","mail","phone","sparkle"].includes(a.iconName)),
       };
 
-      const lines = [
-        `📋 RECRUITER CRM — DAILY ACTIVITY SUMMARY`,
-        `${today}`,
-        `Total activities logged: ${todayActivities.length}`,
-        ``,
-      ];
-
+      const lines = [`📋 RECRUITER CRM — DAILY ACTIVITY SUMMARY`,`${today}`,`Total activities logged: ${todayActivities.length}`,``];
       Object.entries(groups).forEach(([label, items]) => {
         if (items.length === 0) return;
         lines.push(`── ${label.toUpperCase()} (${items.length}) ──`);
-        items.forEach(a => {
-          lines.push(`• ${a.time} — ${a.text}`);
-          if (a.detail) lines.push(`  ${a.detail}`);
-        });
+        items.forEach(a => { lines.push(`• ${a.time} — ${a.text}`); if (a.detail) lines.push(`  ${a.detail}`); });
         lines.push(``);
       });
-
       lines.push(`──────────────────────────────────`);
       lines.push(`Sent automatically by your Recruiter CRM at 5:00 PM CST`);
 
-      await gmail.sendEmail({
-        to: gmail.gmailUser.email,
+      await g.sendEmail({
+        to: g.gmailUser.email,
         subject: `🗂 CRM Daily Summary — ${today} (${todayActivities.length} activities)`,
         body: lines.join("\n"),
       });
     };
 
+    const scheduleDailyDigest = () => {
+      const now = new Date();
+      const cstOffset = -6 * 60;
+      const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+      const cstNow = new Date(utcMs + cstOffset * 60000);
+      const target = new Date(cstNow);
+      target.setHours(17, 0, 0, 0);
+      if (cstNow >= target) target.setDate(target.getDate() + 1);
+      const msUntil = target - cstNow;
+      const timer = setTimeout(async () => {
+        await sendDailyDigest();
+        scheduleDailyDigest();
+      }, msUntil);
+      return () => clearTimeout(timer);
+    };
+
     const cleanup = scheduleDailyDigest();
     return cleanup;
-  }, [gmail, activities]);
+  }, []); // ← empty deps: schedule once on mount, use refs for current values
 
   return { logActivity };
 }
