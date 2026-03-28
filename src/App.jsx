@@ -506,10 +506,13 @@ const T={
 const GS=()=>(
   <style>{`
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0;}
-    html,body{height:100%;width:100%;overflow:hidden;background:#FFFFFF;}
+    html,body{height:100%;width:100%;overflow:hidden;background:#FFFFFF;touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y;}
     body{margin:0;background:#fff;}
     input,textarea{-webkit-appearance:none;font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
     ::-webkit-scrollbar{display:none;}
+    /* Prevent all pinch-zoom and double-tap zoom */
+    html{touch-action:manipulation;}
+    body{touch-action:manipulation;}
     @keyframes fadeIn{from{opacity:0}to{opacity:1}}
     @keyframes slideUp{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
     @keyframes popIn{0%{transform:scale(0.88);opacity:0}60%{transform:scale(1.03)}100%{transform:scale(1);opacity:1}}
@@ -1328,7 +1331,7 @@ function ExpandableContactCard({contact,setContacts,last,gmail}){
                           <Icon name="mail" size={9} color="#fff" strokeWidth={2}/>
                         </div>
                         <span style={{...sf(11,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em"}}>Gmail Emails</span>
-                        {gmail.syncing&&<span style={{...sf(10,400,T.label3)}}>syncing…</span>}
+                        {gmail.lastSync&&<span style={{...sf(10,400,T.label3),marginLeft:"auto"}}>Updated {gmail.lastSync.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>}
                       </div>
                       <GmailThreadView emails={contact.gmailEmails} contactName={contact.name}/>
                     </div>
@@ -1731,7 +1734,7 @@ function ClientContactCard({ct,isOpen,onToggle,onRemove,gmail}){
                   <Icon name="mail" size={9} color="#fff" strokeWidth={2}/>
                 </div>
                 <span style={{...sf(12,700,T.label3),textTransform:"uppercase",letterSpacing:"0.07em"}}>Gmail Emails</span>
-                {gmail.syncing&&<span style={{...sf(10,400,T.label3)}}>syncing…</span>}
+                {gmail.lastSync&&<span style={{...sf(10,400,T.label3)}}>Updated {gmail.lastSync.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</span>}
                 <div className="tap" onClick={()=>gmail.openCompose({email:ct.email,name:ct.name,subject:"Following up",body:"Hi,\n\n"})}
                   style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:4,...sf(12,500,T.blue)}}>
                   <Icon name="plus" size={13} color={T.blue} strokeWidth={2.2}/>Compose
@@ -1941,8 +1944,36 @@ function TabBar({active,onChange}){
   );
 }
 
+// ─── Real-time greeting hook ──────────────────────────────────────────────────
+function useGreeting() {
+  const getState = () => {
+    const now = new Date();
+    const h = now.getHours();
+    const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+    const days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+    const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const dateStr = `${days[now.getDay()]} · ${months[now.getMonth()]} ${now.getDate()}`;
+    return { greeting, dateStr };
+  };
+  const [state, setState] = useState(getState);
+  useEffect(() => {
+    // Update at the top of every minute
+    const tick = () => setState(getState());
+    const now = new Date();
+    const msUntilNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
+    const timeout = setTimeout(() => {
+      tick();
+      const interval = setInterval(tick, 60000);
+      return () => clearInterval(interval);
+    }, msUntilNextMinute);
+    return () => clearTimeout(timeout);
+  }, []);
+  return state;
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActivities,onNavigate,nbaActions,onDismissNBA,onOpenKpi,onOpenNBA,gmail}){
+  const { greeting, dateStr } = useGreeting();
   const pipeVal=jobs.filter(j=>j.stage!=="Filled").reduce((s,j)=>s+parseInt(j.fee.replace(/\D/g,"")),0);
   const criticalCount=nbaActions.filter(a=>a.priority==="critical").length;
 
@@ -1958,8 +1989,8 @@ function Dashboard({contacts,setContacts,jobs,setJobs,clients,activities,setActi
       <div style={{padding:"calc(env(safe-area-inset-top, 44px) + 16px) 20px 20px",background:T.card}}>
         <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:2}}>
           <div>
-            <div style={{...sf(12,500,T.label3),textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:4}}>Friday · March 27</div>
-            <div style={{...sf(28,700,T.label)}}>Good morning</div>
+            <div style={{...sf(12,500,T.label3),textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:4}}>{dateStr}</div>
+            <div style={{...sf(28,700,T.label)}}>{greeting}</div>
           </div>
           {/* NBA Button */}
           <div className="tap" onClick={()=>onOpenNBA()} style={{position:"relative",marginTop:6}}>
