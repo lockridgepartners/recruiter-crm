@@ -468,7 +468,7 @@ function GmailStatusBar({ gmailUser, syncing, lastSync, onConnect, onDisconnect,
       <div style={{flex:1,minWidth:0}}>
         <div style={{...sf(13,600,T.label)}}>Gmail Connected</div>
         <div style={{...sf(11,400,T.label3),marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-          {gmailUser.email} · {syncing?"Syncing…":lastSync?`Synced ${lastSync.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}`:"Tap to sync"}
+          {gmailUser.email} · {lastSync ? `Synced ${lastSync.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}` : "Tap ↻ to sync"}
         </div>
       </div>
       <div className="tap" onClick={onSync} style={{marginRight:4}}><Icon name="activity" size={16} color={T.green} strokeWidth={2}/></div>
@@ -1157,7 +1157,17 @@ function ExpandableJobCard({job,setJobs,last}){
                 :<div style={{...sf(13,400,T.label2),lineHeight:1.7,whiteSpace:"pre-wrap"}}>{job.description||<span style={{color:T.label3,fontStyle:"italic"}}>No job description added yet.</span>}</div>}
               </div>
             )}
-            <div style={{display:"flex",gap:8,paddingBottom:14}}><GhostBtn label={editing?"Save Changes":"Edit"} icon={editing?"check":"edit"} color={T.blue} onPress={editing?save:()=>setEditing(true)}/>{editing&&<GhostBtn label="Cancel" color={T.gray} onPress={()=>{setDraft({...job});setEditing(false);}}/>}</div>
+            <div style={{display:"flex",gap:8,paddingBottom:14}}>
+              <GhostBtn label={editing?"Save Changes":"Edit"} icon={editing?"check":"edit"} color={T.blue} onPress={editing?save:()=>setEditing(true)}/>
+              {editing&&<GhostBtn label="Cancel" color={T.gray} onPress={()=>{setDraft({...job});setEditing(false);}}/>}
+              {!editing&&(
+                <button onClick={()=>{if(window.confirm(`Delete "${job.title}"? This cannot be undone.`))setJobs(p=>p.filter(j=>j.id!==job.id));}}
+                  className="tap"
+                  style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5,border:"none",background:`${T.red}10`,borderRadius:9,padding:"7px 12px",color:T.red,...sf(13,600),cursor:"pointer"}}>
+                  <Icon name="trash" size={13} color={T.red} strokeWidth={2}/>Delete
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1320,7 +1330,23 @@ function ExpandableContactCard({contact,setContacts,last,gmail}){
                 </>
               ):(
                 <div style={{paddingBottom:10}}>
-                  {[{icon:"phone",v:contact.phone,color:T.green},{icon:"mail",v:contact.email,color:T.blue},{icon:"money",v:contact.salary,color:T.orange},{icon:"clock",v:`Last contact ${contact.lastContact}`,color:T.gray}].map(r=>(<div key={r.v} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`}}><Icon name={r.icon} size={16} color={r.color} strokeWidth={1.6}/><span style={{...sf(13,400,T.label2)}}>{r.v}</span></div>))}
+                  {/* Contact info rows — phone is tappable to call, email opens compose */}
+                  {[
+                    {icon:"phone",v:contact.phone,color:T.green, href:`tel:${contact.phone}`},
+                    {icon:"mail", v:contact.email,color:T.blue,  href:null},
+                    {icon:"money",v:contact.salary,color:T.orange,href:null},
+                    {icon:"clock",v:`Last contact ${contact.lastContact}`,color:T.gray,href:null},
+                  ].map(r=>(
+                    r.href
+                      ? <a key={r.v} href={r.href} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`,textDecoration:"none"}}>
+                          <Icon name={r.icon} size={16} color={r.color} strokeWidth={1.6}/>
+                          <span style={{...sf(13,400,r.color)}}>{r.v}</span>
+                        </a>
+                      : <div key={r.v} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`}}>
+                          <Icon name={r.icon} size={16} color={r.color} strokeWidth={1.6}/>
+                          <span style={{...sf(13,400,T.label2)}}>{r.v}</span>
+                        </div>
+                  ))}
                   <div style={{...sf(13,400,T.label2),lineHeight:1.6,marginTop:10,marginBottom:8}}>{contact.notes}</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{contact.tags.map(t=><Pill key={t} label={t} color={T.blue}/>)}</div>
                   {/* Gmail email thread */}
@@ -1338,11 +1364,23 @@ function ExpandableContactCard({contact,setContacts,last,gmail}){
                   )}
                 </div>
               )}
-              <div style={{display:"flex",gap:8,paddingBottom:14,flexWrap:"wrap"}}>
+              <div style={{display:"flex",gap:8,paddingBottom:14,flexWrap:"wrap",alignItems:"center"}}>
                 <GhostBtn label={editing?"Save":"Edit Profile"} icon={editing?"check":"edit"} color={T.blue} onPress={editing?save:()=>setEditing(true)}/>
-                {!editing&&<GhostBtn label="Call" icon="phone" color={T.green} onPress={()=>{}}/>}
+                {!editing&&(
+                  <a href={`tel:${contact.phone}`} style={{textDecoration:"none"}}>
+                    <GhostBtn label="Call" icon="phone" color={T.green} onPress={()=>{}}/>
+                  </a>
+                )}
                 {!editing&&<GhostBtn label="Email" icon="mail" color={T.blue} onPress={()=>gmail?.openCompose({email:contact.email,name:contact.name,subject:`Following up — ${contact.name}`,body:"Hi,\n\n"})}/>}
                 {editing&&<GhostBtn label="Cancel" color={T.gray} onPress={cancel}/>}
+                {/* Inline Hot Lead toggle — no need to enter edit mode */}
+                {!editing&&(
+                  <div className="tap" onClick={()=>setContacts(p=>p.map(c=>c.id===contact.id?{...c,hot:!c.hot}:c))}
+                    style={{display:"flex",alignItems:"center",gap:5,borderRadius:9,padding:"7px 11px",background:contact.hot?"rgba(255,59,48,0.10)":"rgba(142,142,147,0.10)",border:`0.5px solid ${contact.hot?T.red:T.gray4}`}}>
+                    <Icon name="fire" size={14} color={contact.hot?T.red:T.gray3} strokeWidth={contact.hot?2:1.6}/>
+                    <span style={{...sf(12,600,contact.hot?T.red:T.gray)}}>{contact.hot?"Hot":"Mark Hot"}</span>
+                  </div>
+                )}
                 {!editing&&(
                   <button onClick={()=>{if(window.confirm(`Delete ${contact.name}? This cannot be undone.`))setContacts(p=>p.filter(c=>c.id!==contact.id));}}
                     className="tap"
@@ -1644,21 +1682,28 @@ function ClientContactCard({ct,isOpen,onToggle,onRemove,gmail}){
         <div style={{borderTop:`0.5px solid ${T.sep}`}}>
           <div style={{padding:"12px 13px 0"}}>
 
-            {/* ── Contact info rows ── */}
+            {/* ── Contact info rows — phone tappable to dial ── */}
             {[
-              {icon:"briefcase",value:ct.title,  color:T.label3},
-              {icon:"mail",     value:ct.email,   color:T.blue},
-              {icon:"phone",    value:ct.phone,   color:T.green},
+              {icon:"briefcase",value:ct.title,  color:T.label3, href:null},
+              {icon:"mail",     value:ct.email,   color:T.blue,   href:null},
+              {icon:"phone",    value:ct.phone,   color:T.green,  href:`tel:${ct.phone}`},
             ].filter(r=>r.value).map(r=>(
-              <div key={r.value} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`}}>
-                <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
-                <span style={{...sf(13,400,T.label2)}}>{r.value}</span>
-              </div>
+              r.href
+                ? <a key={r.value} href={r.href} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`,textDecoration:"none"}}>
+                    <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
+                    <span style={{...sf(13,400,r.color)}}>{r.value}</span>
+                  </a>
+                : <div key={r.value} style={{display:"flex",alignItems:"center",gap:9,padding:"6px 0",borderBottom:`0.5px solid ${T.sep}`}}>
+                    <Icon name={r.icon} size={14} color={r.color} strokeWidth={1.7}/>
+                    <span style={{...sf(13,400,T.label2)}}>{r.value}</span>
+                  </div>
             ))}
 
             {/* ── Quick actions ── */}
             <div style={{display:"flex",gap:7,marginTop:11,marginBottom:14,flexWrap:"wrap"}}>
-              <GhostBtn label="Call"  icon="phone" color={T.green} onPress={()=>{}}/>
+              <a href={`tel:${ct.phone}`} style={{textDecoration:"none"}}>
+                <GhostBtn label="Call" icon="phone" color={T.green} onPress={()=>{}}/>
+              </a>
               <GhostBtn label="Email" icon="mail"  color={T.blue}  onPress={()=>gmail?.openCompose({email:ct.email,name:ct.name,subject:`Following up`,body:"Hi,\n\n"})}/>
               <button onClick={e=>{e.stopPropagation();onRemove(ct.id);}} className="tap"
                 style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:5,border:"none",background:`${T.red}10`,borderRadius:8,padding:"6px 11px",color:T.red,...sf(12,600),cursor:"pointer"}}>
