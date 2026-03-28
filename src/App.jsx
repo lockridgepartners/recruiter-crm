@@ -846,12 +846,12 @@ const THEMES = {
     r:13,rLg:20,spring:"cubic-bezier(0.34,1.56,0.64,1)",ease:"cubic-bezier(0.25,0.46,0.45,0.94)",
   },
   dark: {
-    bg:"#000000",card:"#1C1C1E",
+    bg:"#1C1C1E",card:"#1C1C1E",
     label:"#FFFFFF",label2:"rgba(255,255,255,0.80)",label3:"rgba(255,255,255,0.45)",
     sep:"rgba(255,255,255,0.10)",
     blue:"#0A84FF",green:"#30D158",orange:"#FF9F0A",red:"#FF453A",
     purple:"#BF5AF2",teal:"#64D2FF",indigo:"#5E5CE6",
-    gray:"#8E8E93",gray3:"#48484A",gray4:"#3A3A3C",gray5:"#2C2C2E",gray6:"#1C1C1E",
+    gray:"#8E8E93",gray3:"#48484A",gray4:"#3A3A3C",gray5:"#3A3A3C",gray6:"#2C2C2E",
     r:13,rLg:20,spring:"cubic-bezier(0.34,1.56,0.64,1)",ease:"cubic-bezier(0.25,0.46,0.45,0.94)",
   },
 };
@@ -883,8 +883,8 @@ function useTheme() {
 const GS=({dark=false})=>(
   <style>{`
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0;}
-    html,body{height:100%;width:100%;overflow:hidden;background:${dark?"#000000":T.bg};touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y;}
-    body{margin:0;background:${dark?"#000000":T.bg};}
+    html,body{height:100%;width:100%;overflow:hidden;background:${dark?"#1C1C1E":T.bg};touch-action:pan-x pan-y;-ms-touch-action:pan-x pan-y;}
+    body{margin:0;background:${dark?"#1C1C1E":T.bg};}
     input,textarea{-webkit-appearance:none;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color-scheme:${dark?"dark":"light"};}
     ::-webkit-scrollbar{display:none;}
     html{touch-action:manipulation;}
@@ -1144,11 +1144,11 @@ function useIntelligence(contacts,jobs,clients){
       if(job.deadlineDays<0){
         actions.push({id:id(),priority:"critical",type:"job",icon:"alert",iconBg:"rgba(255,59,48,0.12)",iconColor:T.red,
           title:`Overdue: ${job.title} at ${job.company}`,subtitle:`Deadline passed ${Math.abs(job.deadlineDays)}d ago`,
-          action:`The ${job.title} role at ${job.company} deadline has passed. Contact ${job.company}'s hiring manager immediately to clarify status, extend the deadline, or understand if they've moved forward internally. ${job.candidates} candidates are in your pipeline for this role.`,
+          action:`The ${job.title} role at ${job.company} deadline has passed. Contact ${job.company}'s hiring manager immediately to clarify status, extend the deadline, or understand if they've moved forward internally. ${(job.prospects||[]).length} candidates are in your pipeline for this role.`,
           tags:["Overdue","Critical"],color:T.red});
       } else if(job.deadlineDays<=7&&job.stage==="Active"){
         actions.push({id:id(),priority:"high",type:"job",icon:"calendar",iconBg:"rgba(255,149,0,0.12)",iconColor:T.orange,
-          title:`Deadline in ${job.deadlineDays}d: ${job.title}`,subtitle:`${job.company} · ${job.candidates} candidates`,
+          title:`Deadline in ${job.deadlineDays}d: ${job.title}`,subtitle:`${job.company} · ${(job.prospects||[]).length} candidates`,
           action:`The ${job.title} role at ${job.company} closes in ${job.deadlineDays} days. Accelerate your pipeline: schedule final interviews, send updated candidate summaries to the client, and confirm which candidates are still interested.`,
           tags:["Deadline","Urgent"],color:T.orange});
       }
@@ -1296,7 +1296,7 @@ function KpiModal({kpi,contacts,jobs,clients,onClose}){
       value:j.fee, badge:j.stage, badgeColor:j.stage==="Active"?T.green:T.orange,
       icon:"briefcase", urgent:j.urgent,
       notes:j.notes,
-      tags:[`${j.candidates} candidates`, j.stage],
+      tags:[`${(j.prospects||[]).length} candidates`, j.stage],
       detail:[
         {icon:"building",value:j.company,color:T.label3},
         {icon:"calendar",value:`Due ${j.deadline}`,color:T.label3},
@@ -1699,7 +1699,7 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,setClients,gmail,l
           <div style={{...sf(15,700,T.blue)}}>{job.fee}</div>
           {hasPitch
             ?<div style={{...sf(10,600,T.green),marginTop:3}}>✦ Pitch ready</div>
-            :<div style={{...sf(12,400,T.label3),marginTop:1}}>{job.candidates} candidates</div>
+            :<div style={{...sf(12,400,T.label3),marginTop:1}}>{(job.prospects||[]).length} candidates</div>
           }
         </div>
         <Chevron open={open}/>
@@ -1759,7 +1759,7 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,setClients,gmail,l
                 )}
                 <div style={{...sf(13,400,T.label2),lineHeight:1.6,marginBottom:10}}>{job.notes}</div>
                 <div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
-                  <Pill label={`${job.candidates} candidates`} color={T.blue}/>
+                  <Pill label={`${(job.prospects||[]).length} candidates`} color={T.blue}/>
                   <Pill label={job.stage} color={job.stage==="Active"?T.green:job.stage==="Filled"?T.gray:T.orange}/>
                   {job.urgent&&<Pill label="Urgent" color={T.red}/>}
                 </div>
@@ -2782,7 +2782,7 @@ function ClientCard({client,setClients,jobs,setJobs,last,gmail,logActivity,onNav
     setMiniModal({
       title:"Total Fees",icon:"revenue",color:T.blue,
       items:clientJobs.map(j=>({
-        title:j.title, sub:`${j.stage} · ${j.candidates} candidates`,
+        title:j.title, sub:`${j.stage} · ${(j.prospects||[]).length} candidates`,
         value:j.fee, badge:j.stage,
         badgeColor:j.stage==="Active"?T.green:j.stage==="Filled"?T.gray:T.orange,
         icon:"briefcase", urgent:j.urgent,
@@ -2808,7 +2808,7 @@ function ClientCard({client,setClients,jobs,setJobs,last,gmail,logActivity,onNav
         detail:[
           {icon:"building",value:j.company,color:T.label3},
           {icon:"calendar",value:`Due ${j.deadline}`,color:T.label3},
-          {icon:"people",value:`${j.candidates} candidates`,color:T.label3},
+          {icon:"people",value:`${(j.prospects||[]).length} candidates`,color:T.label3},
           {icon:"money",value:j.fee,color:T.blue},
         ],
       })),
@@ -2981,7 +2981,7 @@ function ClientCard({client,setClients,jobs,setJobs,last,gmail,logActivity,onNav
                 {job.clientContactId&&(client.contacts||[]).find(c=>c.id===job.clientContactId)&&(
                   <div style={{...sf(11,400,T.label3),marginTop:2}}>Contact: {(client.contacts||[]).find(c=>c.id===job.clientContactId)?.name}</div>
                 )}
-                <div style={{...sf(12,400,T.label3),marginTop:2}}>Due {job.deadline} · {job.candidates} candidates</div></div>
+                <div style={{...sf(12,400,T.label3),marginTop:2}}>Due {job.deadline} · {(job.prospects||[]).length} candidates</div></div>
                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                   <div style={{textAlign:"right"}}><div style={{...sf(14,700,T.blue)}}>{job.fee}</div><div style={{marginTop:4}}><Pill label={job.stage} color={job.stage==="Active"?T.green:job.stage==="Filled"?T.gray:T.orange}/></div></div>
                   <Icon name="chevronRight" size={14} color={T.gray3} strokeWidth={2}/>
