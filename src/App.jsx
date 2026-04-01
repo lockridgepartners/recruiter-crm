@@ -1550,13 +1550,14 @@ INSTRUCTIONS:
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST",
-    headers:{"Content-Type":"application/json"},
+    headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01"},
     body:JSON.stringify({
       model:"claude-sonnet-4-20250514",
       max_tokens:1000,
       messages:[{role:"user",content:prompt}]
     })
   });
+  if(!response.ok){const err=await response.text();throw new Error(`API ${response.status}: ${err.slice(0,120)}`);}
   const data = await response.json();
   return data.content?.map(b=>b.text||"").join("").trim()||"";
 }
@@ -1615,10 +1616,12 @@ function ExpandableJobCard({job,setJobs,last,contacts,clients,setClients,gmail,l
     setGenerating(true);setGenerateError("");
     try{
       const pitch=await generateJobPitch(jobData);
+      if(!pitch) throw new Error("Empty response from API");
       persistPitch(pitch);
       setTab("pitch");
     }catch(e){
-      setGenerateError("Generation failed. Check your connection and try again.");
+      console.error("Job pitch error:",e);
+      setGenerateError(`Generation failed: ${e.message||"Check your connection and try again."}`);
     }finally{setGenerating(false);}
   };
 
@@ -2045,13 +2048,14 @@ INSTRUCTIONS:
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST",
-    headers:{"Content-Type":"application/json"},
+    headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01"},
     body:JSON.stringify({
       model:"claude-sonnet-4-20250514",
       max_tokens:1000,
       messages:[{role:"user",content:prompt}]
     })
   });
+  if(!response.ok){const err=await response.text();throw new Error(`API ${response.status}: ${err.slice(0,120)}`);}
   const data = await response.json();
   return data.content?.map(b=>b.text||"").join("").trim() || "";
 }
@@ -2164,10 +2168,12 @@ function ExpandableContactCard({contact,setContacts,last,gmail,logActivity,jobs,
     setGenerating(true);setGenerateError("");
     try{
       const pitch=await generateBDPitch(contact,resumeData);
+      if(!pitch) throw new Error("Empty response from API");
       persistPitch(pitch);
       setTab("bdpitch");
     }catch(e){
-      setGenerateError("Generation failed. Check your connection and try again.");
+      console.error("BD pitch error:",e);
+      setGenerateError(`Generation failed: ${e.message||"Check your connection and try again."}`);
     }finally{setGenerating(false);}
   };
 
@@ -3296,9 +3302,10 @@ async function parseResumeWithClaude(contentBlock, textFallback) {
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1500, messages:[{ role:"user", content }] })
   });
+  if(!response.ok){const err=await response.text();throw new Error(`API ${response.status}: ${err.slice(0,120)}`);}
   const data = await response.json();
   const text = data.content?.map(b=>b.text||"").join("").trim()||"";
   if (!text) throw new Error("Empty response from Claude");
